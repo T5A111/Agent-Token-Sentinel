@@ -2,10 +2,18 @@
 
 **English** | [繁體中文](./README.zh-TW.md)
 
+[![CI](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/agent-token-sentinel.svg)](https://www.npmjs.com/package/agent-token-sentinel)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)
+
 > A local-first watchdog and context optimizer for coding agents (Claude Code, Cursor, Windsurf, any MCP client).
 > It **breaks whack-a-mole debug loops** before they burn your token budget and wreck your code, and it **distills bloated context** so the agent stays sharp.
 
 Everything runs on your machine: no external API calls, no telemetry. State lives in `.sentinel/` (git-ignored automatically).
+
+> **Status: beta (v0.1).** The core engine, MCP server, CLI and the Claude Code integration are covered by the test suite on Linux, macOS and Windows.
+> The **Cursor and Windsurf hook adapters are beta**: they are built against the published hook formats and tested with simulated payloads, but not yet verified end-to-end in those editors. Please [open an issue](https://github.com/T5A111/Token-Sentinel/issues) with your editor version if something doesn't trigger.
 
 ---
 
@@ -57,22 +65,35 @@ Coding agents fail in two expensive ways:
 
 ## Quick start
 
-```bash
-git clone https://github.com/t5a111/token-sentinel.git agent-token-sentinel
-cd agent-token-sentinel && npm install && npm run build   # Node ≥ 18.17
+Requires **Node.js ≥ 20** and **git** (git is only needed for rollback).
 
-# In the project you want to guard:
+**Option A: from npm (recommended)**
+
+```bash
 cd ~/my-project
-node ~/agent-token-sentinel/dist/cli/index.js install --all   # Claude Code + Cursor + Windsurf + git
+npx agent-token-sentinel install --all     # Claude Code + Cursor + Windsurf + git hook
+# or install globally to get a faster `sentinel` command:
+npm install -g agent-token-sentinel && sentinel install --all
 ```
 
-`sentinel install` merges into existing configs (it never clobbers them) and is idempotent. Pass `--claude`, `--cursor`, `--windsurf` or `--git` to install selectively, `--dry-run` to preview, or `--command "npx agent-token-sentinel"` to write a portable command instead of an absolute path.
-
-Then make the agent run tests through the wrapper:
+**Option B: from source**
 
 ```bash
-sentinel run -- npm test      # exit code passes through; prints a distilled failure instead of the raw log
+git clone https://github.com/T5A111/Token-Sentinel.git && cd Token-Sentinel
+npm install && npm run build && npm link   # `npm link` puts `sentinel` on your PATH
+cd ~/my-project && sentinel install --all
 ```
+
+`sentinel install` merges into existing configs (it never clobbers them) and is idempotent. Pass `--claude`, `--cursor`, `--windsurf` or `--git` to install selectively, or `--dry-run` to preview.
+When run through `npx`, the generated configs call `npx -y agent-token-sentinel …`, so they never point into the temporary npx cache. With a global or source install they call the installed script directly, which is faster.
+
+Then make the agent run tests through the wrapper (the installed `SKILL.md` and rules already tell it to):
+
+```bash
+sentinel run -- npm test      # or: npx agent-token-sentinel run -- npm test
+```
+
+The exit code passes through unchanged, and a distilled failure is printed instead of the raw log.
 
 ## Integration
 
@@ -98,7 +119,7 @@ sentinel run -- npm test      # exit code passes through; prints a distilled fai
 
 **`.claude/skills/token-sentinel/SKILL.md`**: the agent operating rules ([SKILL.md](./SKILL.md)).
 
-### Cursor
+### Cursor *(beta)*
 
 `sentinel install --cursor` writes `.cursor/mcp.json`, `.cursor/hooks.json` and `.cursor/rules/token-sentinel.mdc` (`alwaysApply: true`):
 
@@ -115,7 +136,7 @@ sentinel run -- npm test      # exit code passes through; prints a distilled fai
 
 When the circuit is OPEN, `preToolUse` answers `{"permission":"deny", ...}` and exits 2.
 
-### Windsurf (Cascade)
+### Windsurf (Cascade) *(beta)*
 
 `sentinel install --windsurf` writes `.windsurf/hooks.json` and `.windsurf/rules/token-sentinel.md` (`trigger: always_on`):
 
@@ -144,8 +165,8 @@ Windsurf reads MCP servers only from the user-global `~/.codeium/windsurf/mcp_co
 | Client | MCP tools | Hard write block | Auto-record edits | Auto-record test runs |
 |---|---|---|---|---|
 | Claude Code | ✅ | ✅ PreToolUse exit 2 | ✅ PostToolUse | ✅ (`sentinel run` for exact exit codes) |
-| Cursor | ✅ | ✅ preToolUse exit 2 / `deny` | ✅ afterFileEdit | ✅ afterShellExecution |
-| Windsurf | ✅ (global config) | ✅ pre_write_code exit 2 | ✅ post_write_code | ✅ post_run_command |
+| Cursor *(beta)* | ✅ | ✅ preToolUse exit 2 / `deny` | ✅ afterFileEdit | ✅ afterShellExecution |
+| Windsurf *(beta)* | ✅ (global config) | ✅ pre_write_code exit 2 | ✅ post_write_code | ✅ post_run_command |
 | Other MCP clients | ✅ | advisory (`sentinel_guard_edit`) | `sentinel_record_edit` | `sentinel_record_run` / `sentinel run` |
 | git | — | ✅ pre-commit | — | — |
 
@@ -204,8 +225,11 @@ All fields are optional. An invalid file falls back to the defaults and shows a 
 ## Self-verification
 
 ```bash
-npm run typecheck && npm test
+npm run typecheck && npm test   # unit + integration suite
+npm run test:pack               # builds the npm tarball, installs it in a clean project, runs CLI + MCP handshake
 ```
+
+CI runs both on Linux, macOS and Windows with Node 20, 22 and 24.
 
 The suite (`tests/self-test.ts`) covers the four required scenarios plus rollback, pruning, compaction, the MCP protocol and the CLI/installer:
 
@@ -242,6 +266,10 @@ SKILL.md              rules for the agent
 - Rollback needs a git repository. Without one, the sentinel runs in block-only mode.
 - Precise AST pruning covers TS/JS (`.ts .tsx .js .jsx .mts .cts .mjs .cjs`). Other languages use a heuristic.
 - An agent determined to bypass the guard (e.g. writing files through the shell) can still do so. The hooks gate the editor's write tools, and the git hook gates commits.
+
+## Contributing
+
+Issues and PRs are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the development and release workflow, and [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 ## License
 

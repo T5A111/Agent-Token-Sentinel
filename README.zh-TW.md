@@ -2,10 +2,18 @@
 
 [English](./README.md) | **繁體中文**
 
+[![CI](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/agent-token-sentinel.svg)](https://www.npmjs.com/package/agent-token-sentinel)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)
+
 > 給 Coding Agent（Claude Code、Cursor、Windsurf 及任何 MCP 客戶端）用的本機優先看門狗與上下文優化引擎。
 > 它會在 **打地鼠式除錯死循環** 燒光 Token、改壞程式碼之前**熔斷**，並**蒸餾膨脹的上下文**，讓 Agent 維持判斷精度。
 
 所有分析都在本機完成：不呼叫任何外部 API，也沒有遙測。狀態存放在 `.sentinel/`，並自動排除在 git 之外。
+
+> **狀態：Beta（v0.1）。** 核心引擎、MCP Server、CLI 與 Claude Code 整合都有測試覆蓋，並在 Linux、macOS、Windows 上執行。
+> **Cursor 與 Windsurf 的 Hook 整合為 Beta**：依照官方公布的 Hook 格式實作，並用模擬資料測試過，但還沒在這兩個編輯器中做過完整的實機驗證。如果 Hook 沒有觸發，歡迎[開 Issue](https://github.com/T5A111/Token-Sentinel/issues) 並附上編輯器版本。
 
 ---
 
@@ -57,22 +65,35 @@ Coding Agent 最常在兩件事上浪費最多：
 
 ## 快速開始
 
-```bash
-git clone https://github.com/t5a111/token-sentinel.git agent-token-sentinel
-cd agent-token-sentinel && npm install && npm run build   # Node ≥ 18.17
+需要 **Node.js ≥ 20** 與 **git**（git 只有回滾功能會用到）。
 
-# 到你想保護的專案：
+**方式 A：從 npm 安裝（推薦）**
+
+```bash
 cd ~/my-project
-node ~/agent-token-sentinel/dist/cli/index.js install --all   # Claude Code + Cursor + Windsurf + git
+npx agent-token-sentinel install --all     # 一次設定 Claude Code + Cursor + Windsurf + git hook
+# 或全域安裝，取得速度較快的 `sentinel` 指令：
+npm install -g agent-token-sentinel && sentinel install --all
 ```
 
-`sentinel install` 會**合併**進既有設定，不會覆蓋，重複執行也不會產生重複項目。可以用 `--claude`、`--cursor`、`--windsurf`、`--git` 個別安裝；`--dry-run` 只預覽不寫入；`--command "npx agent-token-sentinel"` 會改寫入可攜式指令，而不是絕對路徑。
-
-接著讓 Agent 透過包裝器執行測試：
+**方式 B：從原始碼安裝**
 
 ```bash
-sentinel run -- npm test      # exit code 原樣傳回；失敗時印出蒸餾後的錯誤，而不是原始日誌
+git clone https://github.com/T5A111/Token-Sentinel.git && cd Token-Sentinel
+npm install && npm run build && npm link   # `npm link` 會把 `sentinel` 指令加入 PATH
+cd ~/my-project && sentinel install --all
 ```
+
+`sentinel install` 會**合併**進既有設定，不會覆蓋，重複執行也不會產生重複項目。可以用 `--claude`、`--cursor`、`--windsurf`、`--git` 個別安裝，或用 `--dry-run` 只預覽不寫入。
+透過 `npx` 執行時，產生的設定會呼叫 `npx -y agent-token-sentinel …`，不會指向 npx 的暫存快取目錄。全域安裝或從原始碼安裝時，會直接呼叫已安裝的腳本，速度較快。
+
+接著讓 Agent 透過包裝器執行測試（安裝時寫入的 `SKILL.md` 與規則檔已經會要求 Agent 這樣做）：
+
+```bash
+sentinel run -- npm test      # 或：npx agent-token-sentinel run -- npm test
+```
+
+exit code 會原樣傳回；失敗時印出蒸餾後的錯誤，而不是原始日誌。
 
 ## 整合設定
 
@@ -98,7 +119,7 @@ sentinel run -- npm test      # exit code 原樣傳回；失敗時印出蒸餾�
 
 **`.claude/skills/token-sentinel/SKILL.md`**：給 Agent 的操作規則（見 [SKILL.md](./SKILL.md)）。
 
-### Cursor
+### Cursor *（Beta）*
 
 `sentinel install --cursor` 會寫入 `.cursor/mcp.json`、`.cursor/hooks.json`，以及 `.cursor/rules/token-sentinel.mdc`（設定為 `alwaysApply: true`）：
 
@@ -115,7 +136,7 @@ sentinel run -- npm test      # exit code 原樣傳回；失敗時印出蒸餾�
 
 熔斷 OPEN 時，`preToolUse` 會回傳 `{"permission":"deny", ...}`，並以 exit 2 結束。
 
-### Windsurf（Cascade）
+### Windsurf（Cascade）*（Beta）*
 
 `sentinel install --windsurf` 會寫入 `.windsurf/hooks.json` 和 `.windsurf/rules/token-sentinel.md`（設定為 `trigger: always_on`）：
 
@@ -144,8 +165,8 @@ Windsurf 的 MCP 設定**只有全域檔** `~/.codeium/windsurf/mcp_config.json`
 | 客戶端 | MCP 工具 | 硬性阻擋寫入 | 自動記錄修改 | 自動記錄測試 |
 |---|---|---|---|---|
 | Claude Code | ✅ | ✅ PreToolUse exit 2 | ✅ PostToolUse | ✅（要精確的 exit code，請用 `sentinel run`） |
-| Cursor | ✅ | ✅ preToolUse exit 2 / `deny` | ✅ afterFileEdit | ✅ afterShellExecution |
-| Windsurf | ✅（全域設定） | ✅ pre_write_code exit 2 | ✅ post_write_code | ✅ post_run_command |
+| Cursor *（Beta）* | ✅ | ✅ preToolUse exit 2 / `deny` | ✅ afterFileEdit | ✅ afterShellExecution |
+| Windsurf *（Beta）* | ✅（全域設定） | ✅ pre_write_code exit 2 | ✅ post_write_code | ✅ post_run_command |
 | 其他 MCP 客戶端 | ✅ | 僅勸導（`sentinel_guard_edit`） | `sentinel_record_edit` | `sentinel_record_run` / `sentinel run` |
 | git | — | ✅ pre-commit | — | — |
 
@@ -209,8 +230,11 @@ sentinel mcp
 ## 自我驗證
 
 ```bash
-npm run typecheck && npm test
+npm run typecheck && npm test   # 單元與整合測試
+npm run test:pack               # 打包 npm tarball，安裝到乾淨專案後執行 CLI 與 MCP 握手
 ```
+
+CI 會在 Linux、macOS、Windows 上，以 Node 20、22、24 執行以上兩組測試。
 
 測試套件 `tests/self-test.ts` 涵蓋規格要求的 4 個情境，另外加測回滾、AST 裁剪、歷史壓縮、MCP 協定和 CLI／安裝器：
 
@@ -247,6 +271,10 @@ SKILL.md              給 Agent 的規則
 - 回滾需要 git repo；沒有 git 時只會阻擋寫入，不會回滾。
 - 精確的 AST 裁剪只支援 TS/JS（`.ts .tsx .js .jsx .mts .cts .mjs .cjs`），其他語言改用啟發式方法。
 - 刻意繞過的 Agent（例如直接用 shell 寫檔）仍然擋不住。Hook 只能管住編輯器的寫入工具，git hook 只能管住 commit。
+
+## 參與貢獻
+
+歡迎提交 Issue 和 PR。開發與發版流程請見 [CONTRIBUTING.md](./CONTRIBUTING.md)，版本紀錄請見 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 授權
 

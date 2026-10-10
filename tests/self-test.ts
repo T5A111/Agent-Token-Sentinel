@@ -16,6 +16,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { assessRisk, computeReciprocity, detectFingerprintPattern, detectOscillation, fingerprintError } from '../src/circuit-breaker/detector.js';
 import { handleHook } from '../src/cli/hooks.js';
+import { defaultCommands } from '../src/cli/install.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { createServer } from '../src/mcp/server.js';
 import { Sentinel } from '../src/sentinel.js';
@@ -298,6 +299,7 @@ test('5. Git rollback: trip restores agent-touched files, keeps a backup ref, ne
   sh(root, 'init', '-q', '-b', 'main');
   sh(root, 'config', 'user.email', 'dev@example.com');
   sh(root, 'config', 'user.name', 'Dev');
+  sh(root, 'config', 'core.autocrlf', 'false'); // Windows runners default to CRLF conversion
   const original = 'export function total(xs: number[]) {\n  return xs.reduce((a, b) => a + b, 0);\n}\n';
   writeFile(root, 'src/math.ts', original);
   writeFile(root, 'notes.md', 'user notes\n');
@@ -493,16 +495,19 @@ test('9. CLI: `sentinel run` distills a failing command; `sentinel install --all
   const root = tempDir('t9');
   sh(root, 'init', '-q');
   const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'index.ts');
-  const tsx = join(dirname(fileURLToPath(import.meta.url)), '..', 'node_modules', '.bin', 'tsx');
+  // `node --import <tsx>` instead of node_modules/.bin/tsx: .bin shims are .cmd files on Windows.
+  const tsxLoader = import.meta.resolve('tsx');
+  const sentinelCli = (args: string[], opts: Parameters<typeof spawnSync>[2] = {}) =>
+    spawnSync(process.execPath, ['--import', tsxLoader, cli, ...args], { encoding: 'utf8', ...opts }) as ReturnType<typeof spawnSync> & { stdout: string; stderr: string };
   writeFile(root, 'fail.js', "console.log('x'.repeat(50)); for (let i = 0; i < 80; i++) console.error('    at f (/x/node_modules/lib/i.js:' + i + ':1)'); console.error('Error: exploded'); process.exit(3);\n");
-  const run = spawnSync(tsx, [cli, 'run', '--root', root, '--', 'node', 'fail.js'], { encoding: 'utf8', cwd: root });
+  const run = sentinelCli(['run', '--root', root, '--', 'node', 'fail.js'], { cwd: root });
   assert.equal(run.status, 3, `exit code passed through: ${run.stderr}`);
   assert.match(run.stdout, /Error: exploded/);
   assert.match(run.stdout, /failed \(exit 3\)/);
   assert.ok(run.stdout.split('\n').length < 12, run.stdout);
   assert.ok(!run.stdout.includes('node_modules'));
 
-  const inst = spawnSync(tsx, [cli, 'install', '--all', '--root', root], { encoding: 'utf8', cwd: root, env: { ...process.env, HOME: root } });
+  const inst = sentinelCli(['install', '--all', '--root', root], { cwd: root, env: { ...process.env, HOME: root, USERPROFILE: root } });
   assert.equal(inst.status, 0, inst.stderr);
   for (const f of ['.mcp.json', '.claude/settings.json', '.claude/skills/token-sentinel/SKILL.md', '.cursor/mcp.json', '.cursor/hooks.json', '.cursor/rules/token-sentinel.mdc', '.windsurf/hooks.json', '.windsurf/rules/token-sentinel.md', '.git/hooks/pre-commit']) {
     assert.ok(existsSync(join(root, f)), `missing ${f}`);
@@ -515,13 +520,18 @@ test('9. CLI: `sentinel run` distills a failing command; `sentinel install --all
   const windsurf = JSON.parse(readFileSync(join(root, '.windsurf/hooks.json'), 'utf8'));
   assert.ok(windsurf.hooks.pre_write_code && windsurf.hooks.post_run_command);
   // Idempotent: re-install does not duplicate hook entries.
-  spawnSync(tsx, [cli, 'install', '--claude', '--root', root], { encoding: 'utf8', cwd: root });
+  sentinelCli(['install', '--claude', '--root', root], { cwd: root });
   assert.equal(JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8')).hooks.PreToolUse.length, 1);
+
+  // Configs never point into a package-runner cache (npx/pnpm dlx/bunx).
+  assert.deepEqual(defaultCommands('/home/u/.npm/_npx/9f1c2/node_modules/agent-token-sentinel/dist/cli/install.js').mcp, { command: 'npx', args: ['-y', 'agent-token-sentinel', 'mcp'] });
+  assert.equal(defaultCommands('C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\ab12\\node_modules\\agent-token-sentinel\\dist\\cli\\install.js').cli, 'npx -y agent-token-sentinel');
+  assert.match(defaultCommands('/usr/lib/node_modules/agent-token-sentinel/dist/cli/install.js').cli, /^node ".*index\.js"$/);
 
   // The git pre-commit hook rejects commits while OPEN.
   const s = new Sentinel({ root, disableGit: true });
   for (let i = 0; i < 4; i++) s.recordRun({ command: 'npm test', exitCode: 1, log: `E${i}Error: ${i}`, source: 'test' });
-  const pre = spawnSync(tsx, [cli, 'hook', 'git-pre-commit', '--root', root], { encoding: 'utf8' });
+  const pre = sentinelCli(['hook', 'git-pre-commit', '--root', root]);
   assert.equal(pre.status, 1);
   assert.match(pre.stderr, /Commit rejected/);
   metric(`T9 \`sentinel run\` output ${run.stdout.split('\n').length} lines; installed configs for Claude Code, Cursor, Windsurf, git`);

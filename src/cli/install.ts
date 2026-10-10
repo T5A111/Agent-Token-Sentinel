@@ -30,9 +30,16 @@ const GIT_HOOK_MARKER = '# agent-token-sentinel pre-commit';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+export const PACKAGE_NAME = 'agent-token-sentinel';
+
+/** Package-runner caches (npx, pnpm dlx, bunx) are wiped at will: never write their paths into configs. */
+const EPHEMERAL_INSTALL = /[\\/]_npx[\\/]|[\\/]dlx-[^\\/]*[\\/]|[\\/]bunx-[^\\/]*[\\/]/;
+
 /** How hooks/MCP configs should invoke this installation of the CLI. */
-export function defaultCommands(): { cli: string; mcp: { command: string; args: string[] } } {
-  const here = fileURLToPath(import.meta.url);
+export function defaultCommands(here: string = fileURLToPath(import.meta.url)): { cli: string; mcp: { command: string; args: string[] } } {
+  if (EPHEMERAL_INSTALL.test(here)) {
+    return { cli: `npx -y ${PACKAGE_NAME}`, mcp: { command: 'npx', args: ['-y', PACKAGE_NAME, 'mcp'] } };
+  }
   const isTs = here.endsWith('.ts');
   const cliPath = join(dirname(here), isTs ? 'index.ts' : 'index.js');
   const mcpPath = join(dirname(here), '..', 'mcp', isTs ? 'server.ts' : 'server.js');
