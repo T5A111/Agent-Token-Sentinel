@@ -1,0 +1,55 @@
+{
+  "name": "agent-token-sentinel",
+  "version": "0.1.0",
+  "description": "Local-first watchdog and context optimizer for coding agents: breaks whack-a-mole debug loops and distills bloated context.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "sentinel": "dist/cli/index.js",
+    "sentinel-mcp": "dist/mcp/server.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "SKILL.md",
+    "README.md",
+    "README.zh-TW.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx tests/self-test.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "coding-agent",
+    "circuit-breaker",
+    "token",
+    "context-window"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "typescript": "~5.9",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15"
+  }
+}
