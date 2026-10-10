@@ -37,6 +37,7 @@ Coding Agent 最常在兩件事上浪費最多：
 - 🗜️ **歷史斷代壓縮**：每 3 輪除錯自動產生一行摘要，例如：
   `[Compacted]: Rounds 1-3 attempted null-checks at src/auth.ts#login, failed with TypeError ×3. Reverted.`
 - 🔌 **硬性攔截**：Claude Code、Cursor、Windsurf 的寫入前 Hook 在熔斷 OPEN 時以 exit code 2 阻擋寫入；git pre-commit hook 會拒絕提交。
+- 🧹 **一鍵安全移除**：`uninstall --all` 只移除 `install` 加入的東西，你自己的設定一個字都不動；除非加 `--purge`，否則會保留復原資料。詳見[移除](#移除)。
 
 ## 架構
 
@@ -94,6 +95,8 @@ sentinel run -- npm test      # 或：npx agent-token-sentinel run -- npm test
 ```
 
 exit code 會原樣傳回；失敗時印出蒸餾後的錯誤，而不是原始日誌。
+
+> **試用後不想要了？** 執行 `npx -y agent-token-sentinel uninstall --all` 就能一行移除，專案會恢復成安裝前的樣子。建議先加 `--dry-run` 預覽。詳見[移除](#移除)。
 
 ## 整合設定
 
@@ -174,18 +177,58 @@ Windsurf 的 MCP 設定**只有全域檔** `~/.codeium/windsurf/mcp_config.json`
 
 ## 移除
 
+> 需要 v0.1.1 以上版本。可以用 `npx -y agent-token-sentinel version` 確認。
+
+**第 1 步：預覽**（不會改動任何檔案）
+
 ```bash
-npx -y agent-token-sentinel uninstall --all --dry-run   # 先預覽會移除哪些東西
-npx -y agent-token-sentinel uninstall --all             # 正式移除
+npx -y agent-token-sentinel uninstall --all --dry-run
 ```
 
-- 只移除 `install` 加入的東西：Sentinel 的 Hook 項目、`token-sentinel` MCP server、`SKILL.md`、規則檔，以及 Sentinel 的 `pre-commit` hook。**你自己的 Hook、MCP server 和其他設定會一個字都不動地保留**；設定檔只有在裡面沒有其他內容時才會被刪除。
-- **預設保留復原資料**：`.sentinel/`（狀態與 Dead-End 紀錄）和 `refs/sentinel/*` 這些 git 快照。快照裡包含熔斷器回滾 Agent 修改前的備份，加上 `--purge` 才會一併刪除。
-- 加 `--global` 會一併清理 Windsurf 的全域設定 `~/.codeium/windsurf/mcp_config.json`。
-- 不是 Sentinel 建立的 git hook，以及無法解析的設定檔，一律不動，只會列出提醒。
-- 移除後請重開 Claude Code／Cursor／Windsurf，它們才會停止載入 Hook 與 MCP server。
+**第 2 步：正式移除**，完成後**重開** Claude Code／Cursor／Windsurf，它們才會停止載入 Hook 與 MCP server：
 
-Sentinel 不會 commit 到你的分支，除了回滾之外也不會修改你的原始碼，所以移除後專案會和安裝前完全一樣。
+```bash
+npx -y agent-token-sentinel uninstall --all
+```
+
+每個執行過 `install` 的專案都要各自執行一次。如果是全域安裝或從原始碼安裝，也可以用 `sentinel uninstall --all`，效果相同。
+
+### 常見情境
+
+| 我想要… | 指令 |
+|---|---|
+| 先預覽會移除哪些東西 | `npx -y agent-token-sentinel uninstall --all --dry-run` |
+| 從目前專案移除全部（保留復原資料） | `npx -y agent-token-sentinel uninstall --all` |
+| 只移除某一個編輯器的設定 | `npx -y agent-token-sentinel uninstall --claude`（或 `--cursor`、`--windsurf`、`--git`，可以同時加多個） |
+| 連 `.sentinel/` 和所有 git 快照、回滾備份一起刪除 | `npx -y agent-token-sentinel uninstall --all --purge` |
+| 一併清理 Windsurf 的全域 MCP 設定 | `npx -y agent-token-sentinel uninstall --windsurf --global` |
+| 移除不在目前資料夾的專案 | `npx -y agent-token-sentinel uninstall --all --root C:\path\to\project` |
+| 移除套件本身（全域安裝） | `npm uninstall -g agent-token-sentinel` |
+| 移除套件本身（從原始碼用 `npm link` 安裝） | `npm unlink -g agent-token-sentinel`，再刪除 clone 下來的資料夾 |
+
+請**先**在各專案執行 `uninstall`，**再**移除套件本身。順序反過來的話，`sentinel` 指令已經不在了，不過 `npx -y agent-token-sentinel …` 仍然可以用。
+
+### 會做什麼、絕對不會做什麼
+
+- **只移除 `install` 加入的東西**：Sentinel 的 Hook 項目、`token-sentinel` MCP server、`SKILL.md`、Cursor／Windsurf 規則檔，以及 Sentinel 的 `pre-commit` hook。
+- **你自己的 Hook、MCP server 和其他設定一個字都不動。** 設定檔只有在裡面沒有其他內容時才會刪除，資料夾也只有在變成空的時候才會刪除。
+- **預設保留復原資料**：`.sentinel/`（狀態與 Dead-End 紀錄）和 `refs/sentinel/*` 這些 git 快照，其中包含熔斷器回滾 Agent 修改前的備份。確定用不到了，再加 `--purge` 刪除。
+- **不是 Sentinel 建立的 git hook，以及無法解析的設定檔，一律不動。** 它們會列在警告裡，指令也會以 exit code 1 結束，提醒你注意。
+- 不會 commit，不會動你的分支、HEAD、index、stash，也不會修改你的原始碼。移除後專案會和安裝前完全一樣。
+
+<details>
+<summary>手動移除（無法執行指令時的備案）</summary>
+
+| 位置 | 要刪除的內容 |
+|---|---|
+| `.claude/settings.json`、`.cursor/hooks.json`、`.windsurf/hooks.json` | 只刪指令含 `hook claude`、`hook cursor` 或 `hook windsurf` 的項目 |
+| `.mcp.json`、`.cursor/mcp.json`、`~/.codeium/windsurf/mcp_config.json` | `mcpServers` 底下的 `token-sentinel` 這一項 |
+| `.claude/skills/token-sentinel/`、`.cursor/rules/token-sentinel.mdc`、`.windsurf/rules/token-sentinel.md` | 直接刪除 |
+| `.git/hooks/pre-commit` | 檔案內含 `# agent-token-sentinel pre-commit` 才刪除 |
+| `.sentinel/` | 刪除（選擇性；狀態與 Dead-End 紀錄） |
+| `refs/sentinel/*` | 用 `git for-each-ref --format="%(refname)" refs/sentinel/` 列出，再逐一執行 `git update-ref -d <ref>` 刪除（選擇性；包含回滾備份） |
+
+</details>
 
 ## MCP 介面
 

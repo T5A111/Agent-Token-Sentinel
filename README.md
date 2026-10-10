@@ -37,6 +37,7 @@ Coding agents fail in two expensive ways:
 - 🗜️ **Episodic History Compactor**: every 3 debug rounds →
   `[Compacted]: Rounds 1-3 attempted null-checks at src/auth.ts#login, failed with TypeError ×3. Reverted.`
 - 🔌 **Hard enforcement**: pre-write hooks for Claude Code, Cursor and Windsurf exit with code 2 to block writes while the circuit is OPEN. A git pre-commit hook rejects commits.
+- 🧹 **Safe one-command uninstall**: `uninstall --all` removes only what `install` added; your own settings stay byte-for-byte unchanged, and recovery data is kept unless you ask for `--purge`. See [Uninstall](#uninstall).
 
 ## Architecture
 
@@ -94,6 +95,8 @@ sentinel run -- npm test      # or: npx agent-token-sentinel run -- npm test
 ```
 
 The exit code passes through unchanged, and a distilled failure is printed instead of the raw log.
+
+> **Changed your mind?** `npx -y agent-token-sentinel uninstall --all` removes it again in one line and leaves your project as it was. Add `--dry-run` first to preview. See [Uninstall](#uninstall).
 
 ## Integration
 
@@ -174,18 +177,58 @@ Windsurf reads MCP servers only from the user-global `~/.codeium/windsurf/mcp_co
 
 ## Uninstall
 
+> Requires v0.1.1 or later. Check with `npx -y agent-token-sentinel version`.
+
+**Step 1: preview** (changes nothing):
+
 ```bash
-npx -y agent-token-sentinel uninstall --all --dry-run   # preview what would be removed
-npx -y agent-token-sentinel uninstall --all             # remove it
+npx -y agent-token-sentinel uninstall --all --dry-run
 ```
 
-- Only what `install` added is removed: sentinel hook entries, the `token-sentinel` MCP server, `SKILL.md`, rules files and the sentinel `pre-commit` hook. **Your own hooks, MCP servers and settings stay byte-for-byte unchanged**, and a config file is deleted only if nothing else was in it.
-- **Recovery data is kept by default**: `.sentinel/` (state, Dead-End logs) and the `refs/sentinel/*` git snapshots, which include the rollback backups of any agent edits the breaker reverted. Add `--purge` to delete them too.
-- Add `--global` to also clean Windsurf's user-global `~/.codeium/windsurf/mcp_config.json`.
-- Foreign git hooks and config files that cannot be parsed are left untouched and reported.
-- Restart Claude Code / Cursor / Windsurf afterwards so they stop loading the hooks and MCP server.
+**Step 2: remove**, then **restart** Claude Code / Cursor / Windsurf so they stop loading the hooks and MCP server:
 
-The sentinel never commits to your branches or edits your source code outside a rollback, so uninstalling leaves your project exactly as it was.
+```bash
+npx -y agent-token-sentinel uninstall --all
+```
+
+Run the command in each project where you ran `install`. If you installed globally or from source, `sentinel uninstall --all` does the same.
+
+### Common cases
+
+| I want to… | Command |
+|---|---|
+| Preview what would be removed | `npx -y agent-token-sentinel uninstall --all --dry-run` |
+| Remove everything from this project (keep recovery data) | `npx -y agent-token-sentinel uninstall --all` |
+| Remove from one editor only | `npx -y agent-token-sentinel uninstall --claude` (or `--cursor`, `--windsurf`, `--git`, combinable) |
+| Also delete `.sentinel/` and all git snapshots / rollback backups | `npx -y agent-token-sentinel uninstall --all --purge` |
+| Also clean Windsurf's user-global MCP config | `npx -y agent-token-sentinel uninstall --windsurf --global` |
+| Uninstall a project other than the current directory | `npx -y agent-token-sentinel uninstall --all --root /path/to/project` |
+| Remove the package itself (global install) | `npm uninstall -g agent-token-sentinel` |
+| Remove the package itself (installed from source with `npm link`) | `npm unlink -g agent-token-sentinel`, then delete the cloned folder |
+
+Run `uninstall` in your projects **before** removing the package itself; otherwise the `sentinel` command is no longer available (`npx -y agent-token-sentinel …` still works).
+
+### What it does, and what it never does
+
+- **Removes only what `install` added**: sentinel hook entries, the `token-sentinel` MCP server, `SKILL.md`, the Cursor/Windsurf rules files and the sentinel `pre-commit` hook.
+- **Your own hooks, MCP servers and settings stay byte-for-byte unchanged.** A config file is deleted only if nothing else was in it, and a folder only if it ends up empty.
+- **Recovery data is kept by default**: `.sentinel/` (state, Dead-End logs) and the `refs/sentinel/*` git snapshots. These include the rollback backups of any agent edits the breaker reverted. Use `--purge` only once you are sure you don't need them.
+- **Foreign git hooks and unparseable config files are never touched.** They are listed as warnings, and the command exits with code 1 so you notice.
+- It never commits, never touches your branch, HEAD, index or stash, and never edits your source code. Uninstalling leaves your project exactly as it was.
+
+<details>
+<summary>Manual removal (if you cannot run the command)</summary>
+
+| Location | What to remove |
+|---|---|
+| `.claude/settings.json`, `.cursor/hooks.json`, `.windsurf/hooks.json` | Only the entries whose command contains `hook claude`, `hook cursor` or `hook windsurf` |
+| `.mcp.json`, `.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json` | The `token-sentinel` entry under `mcpServers` |
+| `.claude/skills/token-sentinel/`, `.cursor/rules/token-sentinel.mdc`, `.windsurf/rules/token-sentinel.md` | Delete |
+| `.git/hooks/pre-commit` | Delete only if it contains `# agent-token-sentinel pre-commit` |
+| `.sentinel/` | Delete (optional; state and Dead-End logs) |
+| `refs/sentinel/*` | `git for-each-ref --format="%(refname)" refs/sentinel/` lists them; delete each with `git update-ref -d <ref>` (optional; includes rollback backups) |
+
+</details>
 
 ## MCP interface
 
