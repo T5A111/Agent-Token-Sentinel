@@ -1,0 +1,72 @@
+{
+  "name": "agent-token-sentinel",
+  "version": "0.1.0",
+  "description": "Local-first watchdog and context optimizer for coding agents: breaks whack-a-mole debug loops and distills bloated context.",
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "coding-agent",
+    "circuit-breaker",
+    "token",
+    "context-window"
+  ],
+  "author": "T5A111",
+  "license": "MIT",
+  "homepage": "https://github.com/T5A111/Token-Sentinel#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/T5A111/Token-Sentinel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/T5A111/Token-Sentinel/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "agent-token-sentinel": "dist/cli/index.js",
+    "sentinel": "dist/cli/index.js",
+    "sentinel-mcp": "dist/mcp/server.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "SKILL.md",
+    "README.md",
+    "README.zh-TW.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx tests/self-test.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "test:pack": "npm run build && node scripts/smoke-pack.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "typescript": "~5.9",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15"
+  }
+}
