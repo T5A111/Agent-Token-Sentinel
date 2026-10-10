@@ -1,6 +1,6 @@
 {
   "name": "agent-token-sentinel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first watchdog and context optimizer for coding agents: breaks whack-a-mole debug loops and distills bloated context.",
   "keywords": [
     "mcp",

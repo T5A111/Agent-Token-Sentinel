@@ -58,7 +58,9 @@ try {
   const run = spawnSync(process.execPath, [cli, 'run', '--root', consumer, '--', 'node', '-e', 'process.exit(0)'], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /passed/);
-  console.log('✔ CLI: help, install --dry-run, run');
+  const un = spawnSync(process.execPath, [cli, 'uninstall', '--all', '--dry-run', '--root', consumer], { encoding: 'utf8' });
+  assert.equal(un.status, 0, un.stdout + un.stderr);
+  console.log('✔ CLI: help, install --dry-run, run, uninstall --dry-run');
 
   // 4. MCP handshake over real stdio.
   const tools = await mcpListTools(server, consumer);

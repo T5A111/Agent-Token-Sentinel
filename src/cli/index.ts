@@ -11,6 +11,7 @@ import { estimateTokens } from '../utils/tokens.js';
 import { VERSION } from '../version.js';
 import { handleGitPreCommit, handleHook, type HookClient, type HookResponse } from './hooks.js';
 import { install, type InstallTarget } from './install.js';
+import { uninstall } from './uninstall.js';
 
 const VALUE_FLAGS = new Set(['root', 'event', 'budget', 'command', 'hypothesis']);
 
@@ -57,6 +58,9 @@ Usage: sentinel <command> [options]
   history                     Show the compacted debug history.
   dead-ends                   Show the latest Dead-End log.
   install [--claude] [--cursor] [--windsurf] [--git] [--all] [--global] [--command "<cli>"] [--dry-run]
+  uninstall [--claude] [--cursor] [--windsurf] [--git] [--all] [--global] [--purge] [--dry-run]
+                              Remove only what install added; your other settings are kept.
+                              --purge also deletes .sentinel/ and refs/sentinel/* (snapshots, rollback backups).
   hook <claude|cursor|windsurf|git-pre-commit> [--event <name>]   (called by agent/git hooks)
   mcp                         Start the MCP server on stdio.
 
@@ -132,6 +136,18 @@ async function runCommand(args: ParsedArgs): Promise<number> {
   if (r.compaction) process.stdout.write(`${r.compaction.episodes.map((e) => e.summary).join('\n')}\n`);
   if (r.trip) process.stdout.write(`\n${r.trip.markdown}\n`);
   return exitCode;
+}
+
+const ALL_TARGETS: InstallTarget[] = ['claude', 'cursor', 'windsurf', 'git'];
+
+function hasTargetFlag(args: ParsedArgs): boolean {
+  return args.flags.all === true || ALL_TARGETS.some((t) => args.flags[t] === true);
+}
+
+/** Targets named by flags; none (or --all) means all of them. */
+function selectedTargets(args: ParsedArgs): InstallTarget[] {
+  if (!hasTargetFlag(args) || args.flags.all === true) return ALL_TARGETS;
+  return ALL_TARGETS.filter((t) => args.flags[t] === true);
 }
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
@@ -223,12 +239,33 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       process.stdout.write(logs[0]?.markdown ?? 'No dead ends recorded.\n');
       return 0;
     }
+    case 'uninstall': {
+      const report = uninstall({
+        root: rootFrom(args),
+        targets: selectedTargets(args),
+        global: args.flags.global === true,
+        purge: args.flags.purge === true,
+        dryRun: args.flags['dry-run'] === true,
+      });
+      const nothing = !report.edited.length && !report.deleted.length && !report.refsDeleted.length;
+      for (const e of report.edited) process.stdout.write(`✎ removed sentinel entries from ${e}\n`);
+      for (const d of report.deleted) process.stdout.write(`✖ deleted ${d}\n`);
+      for (const r of report.refsDeleted) process.stdout.write(`✖ deleted ref ${r}\n`);
+      for (const k of report.kept) process.stdout.write(`ℹ kept ${k}\n`);
+      for (const w of report.warnings) process.stdout.write(`⚠ ${w}\n`);
+      process.stdout.write(
+        nothing
+          ? 'Nothing to remove: agent-token-sentinel is not installed here.\n'
+          : args.flags['dry-run'] === true
+            ? 'Dry run: nothing was changed.\n'
+            : 'Uninstalled. Restart your editor / Claude Code so it stops loading the hooks and MCP server.\n',
+      );
+      return report.warnings.length ? 1 : 0;
+    }
     case 'install': {
-      const all = args.flags.all === true;
-      const targets = (['claude', 'cursor', 'windsurf', 'git'] as InstallTarget[]).filter((t) => all || args.flags[t] === true);
       const report = install({
         root: rootFrom(args),
-        targets: targets.length ? targets : ['claude', 'cursor', 'windsurf', 'git'],
+        targets: selectedTargets(args),
         command: typeof args.flags.command === 'string' ? args.flags.command : undefined,
         global: args.flags.global === true,
         dryRun: args.flags['dry-run'] === true,
