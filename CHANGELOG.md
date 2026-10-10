@@ -4,7 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - Unreleased
+## [0.1.1] - 2026-10-10
+
+### Added
+- `sentinel uninstall [--claude|--cursor|--windsurf|--git|--all] [--global] [--purge] [--dry-run]`:
+  removes only what `install` added. Your own hooks, MCP servers and settings are
+  preserved, and a config file is deleted only if nothing but sentinel content was in it.
+  Recovery data (`.sentinel/`, `refs/sentinel/*` snapshots and rollback backups)
+  is kept unless `--purge` is given. Foreign git hooks and unparseable files are never touched.
+
+## [0.1.0] - 2026-10-10
 
 ### Added
 - Circuit breaker: line-reciprocity flip-flop detection, SHA-256 error

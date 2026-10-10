@@ -26,7 +26,10 @@ export interface InstallReport {
   notes: string[];
 }
 
-const GIT_HOOK_MARKER = '# agent-token-sentinel pre-commit';
+export const GIT_HOOK_MARKER = '# agent-token-sentinel pre-commit';
+
+/** MCP server key written by the installer. */
+export const MCP_SERVER_KEY = 'token-sentinel';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -73,7 +76,7 @@ export function install(options: InstallOptions): InstallReport {
     // Project MCP server (.mcp.json is shared with the team; the root is resolved from CLAUDE_PROJECT_DIR).
     mergeJson(join(root, '.mcp.json'), (cfg) => {
       const servers = (cfg.mcpServers ??= {}) as Record<string, unknown>;
-      servers['token-sentinel'] = { command: mcp.command, args: mcp.args };
+      servers[MCP_SERVER_KEY] = { command: mcp.command, args: mcp.args };
     }, write);
     mergeJson(join(root, '.claude', 'settings.json'), (cfg) => {
       const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
@@ -90,7 +93,7 @@ export function install(options: InstallOptions): InstallReport {
   if (options.targets.includes('cursor')) {
     mergeJson(join(root, '.cursor', 'mcp.json'), (cfg) => {
       const servers = (cfg.mcpServers ??= {}) as Record<string, unknown>;
-      servers['token-sentinel'] = mcpServerEntry;
+      servers[MCP_SERVER_KEY] = mcpServerEntry;
     }, write);
     mergeJson(join(root, '.cursor', 'hooks.json'), (cfg) => {
       cfg.version ??= 1;
@@ -114,7 +117,7 @@ export function install(options: InstallOptions): InstallReport {
     if (options.global) {
       mergeJson(globalMcp, (cfg) => {
         const servers = (cfg.mcpServers ??= {}) as Record<string, unknown>;
-        servers['token-sentinel'] = mcpServerEntry;
+        servers[MCP_SERVER_KEY] = mcpServerEntry;
       }, write);
     } else {
       report.notes.push(
@@ -128,7 +131,7 @@ export function install(options: InstallOptions): InstallReport {
     if (!isGitRepo(root)) {
       report.skipped.push('git: not a git repository');
     } else {
-      const hooksDir = git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']).stdout || join(root, '.git', 'hooks');
+      const hooksDir = gitHooksDir(root);
       const hookPath = join(hooksDir, 'pre-commit');
       const script = `#!/bin/sh\n${GIT_HOOK_MARKER}\n${cli} hook git-pre-commit --root "$(git rev-parse --show-toplevel)" || exit 1\n`;
       if (existsSync(hookPath) && !readFileSync(hookPath, 'utf8').includes(GIT_HOOK_MARKER)) {
@@ -158,8 +161,17 @@ function mergeJson(path: string, mutate: (cfg: Record<string, unknown>) => void,
 /** Replace any existing sentinel hook entry for `event` with `entry`; other hooks are kept. */
 function upsertHook(hooks: Record<string, unknown[]>, event: string, entry: Record<string, unknown>): void {
   const list = Array.isArray(hooks[event]) ? hooks[event] : [];
-  const isOurs = (e: unknown) => / hook (?:claude|cursor|windsurf)\b/.test(JSON.stringify(e));
-  hooks[event] = [...list.filter((e) => !isOurs(e)), entry];
+  hooks[event] = [...list.filter((e) => !isSentinelHookEntry(e)), entry];
+}
+
+/** True for hook entries written by `sentinel install` (whatever command prefix was used). */
+export function isSentinelHookEntry(entry: unknown): boolean {
+  return / hook (?:claude|cursor|windsurf)\b/.test(JSON.stringify(entry));
+}
+
+/** Where git looks for hooks (respects core.hooksPath and worktrees). */
+export function gitHooksDir(root: string): string {
+  return git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']).stdout || join(root, '.git', 'hooks');
 }
 
 function readPackageFile(name: string): string | undefined {

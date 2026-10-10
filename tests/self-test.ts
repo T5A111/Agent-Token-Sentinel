@@ -16,7 +16,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { assessRisk, computeReciprocity, detectFingerprintPattern, detectOscillation, fingerprintError } from '../src/circuit-breaker/detector.js';
 import { handleHook } from '../src/cli/hooks.js';
-import { defaultCommands } from '../src/cli/install.js';
+import { defaultCommands, install } from '../src/cli/install.js';
+import { uninstall } from '../src/cli/uninstall.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { createServer } from '../src/mcp/server.js';
 import { Sentinel } from '../src/sentinel.js';
@@ -535,6 +536,83 @@ test('9. CLI: `sentinel run` distills a failing command; `sentinel install --all
   assert.equal(pre.status, 1);
   assert.match(pre.stderr, /Commit rejected/);
   metric(`T9 \`sentinel run\` output ${run.stdout.split('\n').length} lines; installed configs for Claude Code, Cursor, Windsurf, git`);
+});
+
+/* ================================================================== */
+/* Test 10 — Uninstall                                                   */
+/* ================================================================== */
+
+function snapshotTree(root: string, dir = root, out: Record<string, string> = {}): Record<string, string> {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === '.git') continue;
+    const full = join(dir, entry.name);
+    const rel = full.slice(root.length + 1).split('\\').join('/');
+    if (entry.isDirectory()) {
+      out[`${rel}/`] = '<dir>';
+      snapshotTree(root, full, out);
+    } else out[rel] = readFileSync(full, 'utf8');
+  }
+  return out;
+}
+
+test('10. Uninstall: removes only what install added, keeps user settings and recovery data unless --purge', () => {
+  const root = tempDir('t10');
+  sh(root, 'init', '-q');
+  sh(root, 'config', 'user.email', 'dev@example.com');
+  sh(root, 'config', 'user.name', 'Dev');
+  const json = (v: unknown) => `${JSON.stringify(v, null, 2)}\n`;
+  // The user's own pre-existing configuration.
+  writeFile(root, '.claude/settings.json', json({ permissions: { allow: ['Bash(npm test)'] }, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo mine' }] }] } }));
+  writeFile(root, '.mcp.json', json({ mcpServers: { github: { command: 'gh-mcp' } } }));
+  writeFile(root, '.cursor/hooks.json', json({ version: 1, hooks: { afterFileEdit: [{ command: 'prettier --write' }] } }));
+  writeFile(root, 'src/app.ts', 'export const x = 1;\n');
+  sh(root, 'add', '-A');
+  sh(root, 'commit', '-qm', 'init');
+  const before = snapshotTree(root);
+
+  install({ root, targets: ['claude', 'cursor', 'windsurf', 'git'] });
+  const s = new Sentinel({ root });
+  s.recordRun({ command: 'npm test', exitCode: 0, log: 'ok', source: 'test' }); // creates .sentinel/ + a checkpoint ref
+  assert.ok(sh(root, 'for-each-ref', 'refs/sentinel/').length > 0);
+  const installed = snapshotTree(root);
+  assert.notDeepEqual(installed, before);
+
+  // Dry run changes nothing.
+  const dry = uninstall({ root, targets: ['claude', 'cursor', 'windsurf', 'git'], dryRun: true });
+  assert.ok(dry.edited.length + dry.deleted.length > 0);
+  assert.deepEqual(snapshotTree(root), installed, 'dry-run must not touch the disk');
+
+  // Real uninstall through the CLI: project back to its pre-install state, except recovery data.
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'index.ts');
+  const res = spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), cli, 'uninstall', '--all', '--root', root], { encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /Uninstalled/);
+  assert.match(res.stdout, /kept .*\.sentinel/);
+  assert.match(res.stdout, /snapshot ref\(s\)/);
+  const after = snapshotTree(root);
+  const withoutState = Object.fromEntries(Object.entries(after).filter(([k]) => !k.startsWith('.sentinel/')));
+  assert.deepEqual(withoutState, before, 'every file the user had is byte-identical; everything sentinel added is gone');
+  assert.ok(existsSync(join(root, '.sentinel')), '.sentinel kept without --purge');
+  assert.ok(!existsSync(join(root, '.git', 'hooks', 'pre-commit')), 'sentinel pre-commit hook removed');
+  assert.ok(sh(root, 'for-each-ref', 'refs/sentinel/').length > 0, 'snapshot refs kept without --purge');
+
+  // --purge removes recovery data too; a second run is a no-op.
+  const purge = uninstall({ root, targets: ['claude', 'cursor', 'windsurf', 'git'], purge: true });
+  assert.ok(purge.refsDeleted.length > 0);
+  assert.ok(!existsSync(join(root, '.sentinel')));
+  assert.equal(sh(root, 'for-each-ref', 'refs/sentinel/'), '');
+  assert.deepEqual(snapshotTree(root), before);
+  const again = uninstall({ root, targets: ['claude', 'cursor', 'windsurf', 'git'] });
+  assert.equal(again.edited.length + again.deleted.length + again.refsDeleted.length, 0);
+
+  // A foreign git hook and an unparseable config are never touched.
+  writeFile(root, '.git/hooks/pre-commit', '#!/bin/sh\necho my own hook\n');
+  writeFile(root, '.mcp.json', '{ not json');
+  const safe = uninstall({ root, targets: ['claude', 'git'] });
+  assert.equal(readFileSync(join(root, '.git/hooks/pre-commit'), 'utf8'), '#!/bin/sh\necho my own hook\n');
+  assert.equal(readFileSync(join(root, '.mcp.json'), 'utf8'), '{ not json');
+  assert.ok(safe.warnings.some((w) => w.includes('could not parse')));
+  metric(`T10 install → uninstall restored ${Object.keys(before).length} user paths byte-for-byte; --purge removed ${purge.refsDeleted.length} ref(s) + .sentinel/`);
 });
 
 /* ------------------------------------------------------------------ */

@@ -172,6 +172,21 @@ Windsurf 的 MCP 設定**只有全域檔** `~/.codeium/windsurf/mcp_config.json`
 
 > 各客戶端、各版本送給 Hook 的 payload 欄位都不同，因此採用寬鬆解析。若客戶端沒有提供指令的 exit code，會從輸出內容（`FAIL`、`error TS…`、`Traceback` 等）推斷是否失敗。需要精確結果時，請用 `sentinel run -- <cmd>` 執行測試；這類執行只會記錄一次，post-command hook 會自動略過。
 
+## 移除
+
+```bash
+npx -y agent-token-sentinel uninstall --all --dry-run   # 先預覽會移除哪些東西
+npx -y agent-token-sentinel uninstall --all             # 正式移除
+```
+
+- 只移除 `install` 加入的東西：Sentinel 的 Hook 項目、`token-sentinel` MCP server、`SKILL.md`、規則檔，以及 Sentinel 的 `pre-commit` hook。**你自己的 Hook、MCP server 和其他設定會一個字都不動地保留**；設定檔只有在裡面沒有其他內容時才會被刪除。
+- **預設保留復原資料**：`.sentinel/`（狀態與 Dead-End 紀錄）和 `refs/sentinel/*` 這些 git 快照。快照裡包含熔斷器回滾 Agent 修改前的備份，加上 `--purge` 才會一併刪除。
+- 加 `--global` 會一併清理 Windsurf 的全域設定 `~/.codeium/windsurf/mcp_config.json`。
+- 不是 Sentinel 建立的 git hook，以及無法解析的設定檔，一律不動，只會列出提醒。
+- 移除後請重開 Claude Code／Cursor／Windsurf，它們才會停止載入 Hook 與 MCP server。
+
+Sentinel 不會 commit 到你的分支，除了回滾之外也不會修改你的原始碼，所以移除後專案會和安裝前完全一樣。
+
 ## MCP 介面
 
 | Tool | 用途 |
@@ -195,6 +210,7 @@ sentinel run [--raw] -- <cmd...>      sentinel status [--json]        sentinel r
 sentinel checkpoint [label]           sentinel rollback [id]          sentinel distill [file|-] [--budget N]
 sentinel prune <file> <symbol...>     sentinel compact | history      sentinel dead-ends
 sentinel install [--claude|--cursor|--windsurf|--git|--all] [--global] [--command "..."] [--dry-run]
+sentinel uninstall [--claude|--cursor|--windsurf|--git|--all] [--global] [--purge] [--dry-run]
 sentinel hook <claude|cursor|windsurf|git-pre-commit> [--event name]
 sentinel mcp
 ```
@@ -249,6 +265,7 @@ CI 會在 Linux、macOS、Windows 上，以 Node 20、22、24 執行以上兩組
 | 7 | 6 輪除錯 | 第 4 輪後自動產生 `[Compacted]` 摘要；釋放 ≥ 70% 歷史 Token（實測 82.6%） |
 | 8 | MCP client ↔ server | 所有工具都能列出並呼叫；參數驗證失敗與路徑穿越都以 tool error 回傳 |
 | 9 | `sentinel run`、`install --all`、git pre-commit | exit code 原樣傳回、輸出已蒸餾、設定合併可重複執行、OPEN 時拒絕提交 |
+| 10 | 在使用者既有設定上安裝後再 `uninstall` | 預覽模式不改任何檔案；使用者檔案逐字還原；`.sentinel/` 與快照保留到 `--purge`；別人的 hook 與壞掉的設定檔不受影響 |
 
 ## 目錄結構
 

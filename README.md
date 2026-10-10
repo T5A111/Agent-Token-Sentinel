@@ -172,6 +172,21 @@ Windsurf reads MCP servers only from the user-global `~/.codeium/windsurf/mcp_co
 
 > Hook payload fields differ between clients and versions, so they are parsed tolerantly. When a client does not report a command's exit code, failure is inferred from the output (`FAIL`, `error TS…`, `Traceback`, …). For exact results, run tests through `sentinel run -- <cmd>`; those runs are recorded once and skipped by the post-command hooks.
 
+## Uninstall
+
+```bash
+npx -y agent-token-sentinel uninstall --all --dry-run   # preview what would be removed
+npx -y agent-token-sentinel uninstall --all             # remove it
+```
+
+- Only what `install` added is removed: sentinel hook entries, the `token-sentinel` MCP server, `SKILL.md`, rules files and the sentinel `pre-commit` hook. **Your own hooks, MCP servers and settings stay byte-for-byte unchanged**, and a config file is deleted only if nothing else was in it.
+- **Recovery data is kept by default**: `.sentinel/` (state, Dead-End logs) and the `refs/sentinel/*` git snapshots, which include the rollback backups of any agent edits the breaker reverted. Add `--purge` to delete them too.
+- Add `--global` to also clean Windsurf's user-global `~/.codeium/windsurf/mcp_config.json`.
+- Foreign git hooks and config files that cannot be parsed are left untouched and reported.
+- Restart Claude Code / Cursor / Windsurf afterwards so they stop loading the hooks and MCP server.
+
+The sentinel never commits to your branches or edits your source code outside a rollback, so uninstalling leaves your project exactly as it was.
+
 ## MCP interface
 
 | Tool | Purpose |
@@ -195,6 +210,7 @@ sentinel run [--raw] -- <cmd...>      sentinel status [--json]        sentinel r
 sentinel checkpoint [label]           sentinel rollback [id]          sentinel distill [file|-] [--budget N]
 sentinel prune <file> <symbol...>     sentinel compact | history      sentinel dead-ends
 sentinel install [--claude|--cursor|--windsurf|--git|--all] [--global] [--command "..."] [--dry-run]
+sentinel uninstall [--claude|--cursor|--windsurf|--git|--all] [--global] [--purge] [--dry-run]
 sentinel hook <claude|cursor|windsurf|git-pre-commit> [--event name]
 sentinel mcp
 ```
@@ -244,6 +260,7 @@ The suite (`tests/self-test.ts`) covers the four required scenarios plus rollbac
 | 7 | 6 debug rounds | auto `[Compacted]` after round 4; ≥ 70% of history tokens freed (82.6%) |
 | 8 | MCP client ↔ server | all tools listed and callable; validation and path-traversal errors are tool errors |
 | 9 | `sentinel run`, `install --all`, git pre-commit | exit code passthrough, distilled output, idempotent config merge, commit rejected while OPEN |
+| 10 | install over existing user configs → `uninstall` | dry-run changes nothing; user files byte-identical afterwards; `.sentinel/` + refs kept until `--purge`; foreign hooks and broken files untouched |
 
 ## Project layout
 
