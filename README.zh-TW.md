@@ -2,7 +2,7 @@
 
 [English](./README.md) | **繁體中文**
 
-[![CI](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml)
+[![CI](https://github.com/T5A111/Agent-Token-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/T5A111/Agent-Token-Sentinel/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/agent-token-sentinel.svg)](https://www.npmjs.com/package/agent-token-sentinel)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)
@@ -13,7 +13,7 @@
 所有分析都在本機完成：不呼叫任何外部 API，也沒有遙測。狀態存放在 `.sentinel/`，並自動排除在 git 之外。
 
 > **狀態：Beta（v0.1）。** 核心引擎、MCP Server、CLI 與 Claude Code 整合都有測試覆蓋，並在 Linux、macOS、Windows 上執行。
-> **Cursor 與 Windsurf 的 Hook 整合為 Beta**：依照官方公布的 Hook 格式實作，並用模擬資料測試過，但還沒在這兩個編輯器中做過完整的實機驗證。如果 Hook 沒有觸發，歡迎[開 Issue](https://github.com/T5A111/Token-Sentinel/issues) 並附上編輯器版本。
+> **Cursor 與 Windsurf 的 Hook 整合為 Beta**：依照官方公布的 Hook 格式實作，並用模擬資料測試過，但還沒在這兩個編輯器中做過完整的實機驗證。如果 Hook 沒有觸發，歡迎[開 Issue](https://github.com/T5A111/Agent-Token-Sentinel/issues) 並附上編輯器版本。
 
 ---
 
@@ -80,7 +80,7 @@ npm install -g agent-token-sentinel && sentinel install --all
 **方式 B：從原始碼安裝**
 
 ```bash
-git clone https://github.com/T5A111/Token-Sentinel.git && cd Token-Sentinel
+git clone https://github.com/T5A111/Agent-Token-Sentinel.git && cd Agent-Token-Sentinel
 npm install && npm run build && npm link   # `npm link` 會把 `sentinel` 指令加入 PATH
 cd ~/my-project && sentinel install --all
 ```

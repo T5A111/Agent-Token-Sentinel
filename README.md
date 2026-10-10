@@ -2,7 +2,7 @@
 
 **English** | [繁體中文](./README.zh-TW.md)
 
-[![CI](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/T5A111/Token-Sentinel/actions/workflows/ci.yml)
+[![CI](https://github.com/T5A111/Agent-Token-Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/T5A111/Agent-Token-Sentinel/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/agent-token-sentinel.svg)](https://www.npmjs.com/package/agent-token-sentinel)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)
@@ -13,7 +13,7 @@
 Everything runs on your machine: no external API calls, no telemetry. State lives in `.sentinel/` (git-ignored automatically).
 
 > **Status: beta (v0.1).** The core engine, MCP server, CLI and the Claude Code integration are covered by the test suite on Linux, macOS and Windows.
-> The **Cursor and Windsurf hook adapters are beta**: they are built against the published hook formats and tested with simulated payloads, but not yet verified end-to-end in those editors. Please [open an issue](https://github.com/T5A111/Token-Sentinel/issues) with your editor version if something doesn't trigger.
+> The **Cursor and Windsurf hook adapters are beta**: they are built against the published hook formats and tested with simulated payloads, but not yet verified end-to-end in those editors. Please [open an issue](https://github.com/T5A111/Agent-Token-Sentinel/issues) with your editor version if something doesn't trigger.
 
 ---
 
@@ -80,7 +80,7 @@ npm install -g agent-token-sentinel && sentinel install --all
 **Option B: from source**
 
 ```bash
-git clone https://github.com/T5A111/Token-Sentinel.git && cd Token-Sentinel
+git clone https://github.com/T5A111/Agent-Token-Sentinel.git && cd Agent-Token-Sentinel
 npm install && npm run build && npm link   # `npm link` puts `sentinel` on your PATH
 cd ~/my-project && sentinel install --all
 ```
