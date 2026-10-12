@@ -93,6 +93,10 @@ export class StateStore {
     return full;
   }
 
+  deleteArtifact(relativePath: string): void {
+    rmSync(join(this.dir, relativePath), { force: true });
+  }
+
   readArtifact(relativePath: string): string | undefined {
     const full = join(this.dir, relativePath);
     return existsSync(full) ? readFileSync(full, 'utf8') : undefined;

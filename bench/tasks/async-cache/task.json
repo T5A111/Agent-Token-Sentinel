@@ -1,0 +1,8 @@
+{
+  "title": "A failed load is cached forever",
+  "prompt": "The cache tests are failing. Fix src/cache.js so that `npm test` passes. Do not modify the tests.",
+  "testCommand": "npm test",
+  "protectedPaths": [
+    "tests"
+  ]
+}

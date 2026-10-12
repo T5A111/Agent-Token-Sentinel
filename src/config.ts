@@ -28,6 +28,18 @@ export const ConfigSchema = z.object({
   compactEvery: z.number().int().min(2).default(3),
   /** Lines of source context around the first project call site. */
   contextLines: z.number().int().min(0).max(10).default(3),
+  /** Hard ceiling for the dynamic distill budget (scales with failures and repeats). */
+  distillMaxBudget: z.number().int().min(40).default(600),
+  /** Raw logs kept under .sentinel/logs for sentinel_expand_log. */
+  maxLogs: z.number().int().min(1).default(30),
+  /**
+   * Claude Code: transparently route build/test Bash commands through
+   * `sentinel run` (distilled output, exact exit codes). The raw log stays
+   * retrievable, and `# sentinel:raw` in a command opts out.
+   */
+  autoWrapTests: z.boolean().default(true),
+  /** Max tokens of sentinel memory injected after Claude Code compacts or resumes a session. */
+  memoryTokenBudget: z.number().int().min(80).default(400),
   /** Max checkpoints kept under refs/sentinel/checkpoints. */
   maxCheckpoints: z.number().int().min(1).default(20),
   /**

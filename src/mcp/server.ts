@@ -45,6 +45,7 @@ export function createServer(sentinel: Sentinel): McpServer {
         'Watchdog for coding loops and context bloat. Call sentinel_guard_edit before editing a file, ' +
         'sentinel_record_run after every build/test command (or run tests through `sentinel run -- <cmd>`), ' +
         'and use sentinel_distill_log / sentinel_prune_file instead of pasting full logs or whole files. ' +
+        'When a distilled failure is not enough, pull the missing detail with sentinel_expand_log instead of re-running. ' +
         'If a tool reports the circuit is OPEN: stop editing, read sentinel://dead-ends, re-plan, then sentinel_reset_circuit.',
     },
   );
@@ -191,9 +192,30 @@ export function createServer(sentinel: Sentinel): McpServer {
       annotations: { readOnlyHint: true },
     },
     safe(({ log, tokenBudget }: { log: string; tokenBudget?: number }) => {
-      const r = sentinel.distill(log, tokenBudget);
+      const r = sentinel.distill(log, { tokenBudget });
       return ok(r.text, { originalTokens: r.originalTokens, distilledTokens: r.distilledTokens, reduction: `${(r.reduction * 100).toFixed(1)}%` });
     }),
+  );
+
+  server.registerTool(
+    'sentinel_expand_log',
+    {
+      title: 'Expand a stored raw log',
+      description:
+        'Fetch exactly the part of a recorded run\'s raw log you need when the distilled briefing is not enough: a failure block (`failure: 2`), lines matching a pattern (`grep`), or a line range. ' +
+        'Cheaper than re-running the command. Defaults to the latest run.',
+      inputSchema: {
+        run: z.string().optional().describe('Run id from the distilled footer, e.g. "run-12". Default: latest.'),
+        failure: z.number().int().min(1).optional().describe('1-based failure block, in the order the distilled output lists them.'),
+        grep: z.string().min(1).max(200).optional().describe('Case-insensitive regex; matching lines are returned with context.'),
+        context: z.number().int().min(0).max(20).optional(),
+        from: z.number().int().min(1).optional(),
+        to: z.number().int().min(1).optional(),
+        maxTokens: z.number().int().min(100).max(8000).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    safe((args: { run?: string; failure?: number; grep?: string; context?: number; from?: number; to?: number; maxTokens?: number }) => ok(sentinel.expandLog(args).text)),
   );
 
   server.registerTool(

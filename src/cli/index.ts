@@ -13,7 +13,7 @@ import { handleGitPreCommit, handleHook, type HookClient, type HookResponse } fr
 import { install, type InstallTarget } from './install.js';
 import { uninstall } from './uninstall.js';
 
-const VALUE_FLAGS = new Set(['root', 'event', 'budget', 'command', 'hypothesis']);
+const VALUE_FLAGS = new Set(['shell', 'root', 'event', 'budget', 'command', 'hypothesis', 'grep', 'failure', 'from', 'to', 'context', 'max-tokens']);
 
 interface ParsedArgs {
   positionals: string[];
@@ -53,6 +53,7 @@ Usage: sentinel <command> [options]
   checkpoint [label]          Snapshot the working tree (git refs only, branch untouched).
   rollback [checkpoint-id]    Restore agent-touched files to a checkpoint (backup taken first).
   distill [file|-] [--budget N]   Distill a log file or stdin.
+  log [run-id] [--failure N] [--grep RE] [--from N --to M]   Show (part of) a stored raw log.
   prune <file> <symbol...> [--no-line-numbers]   Print a file pruned to the given symbols.
   compact                     Fold old debug rounds into [Compacted] summaries.
   history                     Show the compacted debug history.
@@ -95,9 +96,12 @@ async function runCommand(args: ParsedArgs): Promise<number> {
   const raw = args.flags.raw === true;
   const display = cmd.join(' ');
   const shown = display.length > 80 ? `${display.slice(0, 77)}...` : display;
+  // --shell <sh>: run a single command string through that shell (used by auto-wrapped
+  // Claude Code commands, which were written for bash). Default: the platform shell.
+  const shell = typeof args.flags.shell === 'string' && args.flags.shell ? args.flags.shell : true;
   const child =
     cmd.length === 1
-      ? spawn(cmd[0] ?? '', { shell: true, stdio: ['inherit', 'pipe', 'pipe'], env: { ...process.env, FORCE_COLOR: '0' } })
+      ? spawn(cmd[0] ?? '', { shell, stdio: ['inherit', 'pipe', 'pipe'], env: { ...process.env, FORCE_COLOR: '0' } })
       : spawn(cmd[0] ?? '', cmd.slice(1), { shell: process.platform === 'win32', stdio: ['inherit', 'pipe', 'pipe'], env: { ...process.env, FORCE_COLOR: '0' } });
   const chunks: string[] = [];
   child.stdout?.on('data', (d: Buffer) => {
@@ -211,7 +215,21 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     case 'distill': {
       const src = pos[0] && pos[0] !== '-' ? readFileSync(pos[0], 'utf8') : readStdin();
       const budget = typeof args.flags.budget === 'string' ? Number(args.flags.budget) : undefined;
-      const r = new Sentinel({ root: rootFrom(args) }).distill(src, budget);
+      const r = new Sentinel({ root: rootFrom(args) }).distill(src, { tokenBudget: budget });
+      process.stdout.write(`${r.text}\n`);
+      return 0;
+    }
+    case 'log': {
+      const num = (k: string) => (typeof args.flags[k] === 'string' ? Number(args.flags[k]) : undefined);
+      const r = new Sentinel({ root: rootFrom(args) }).expandLog({
+        run: pos[0],
+        failure: num('failure'),
+        grep: typeof args.flags.grep === 'string' ? args.flags.grep : undefined,
+        context: num('context'),
+        from: num('from'),
+        to: num('to'),
+        maxTokens: num('max-tokens'),
+      });
       process.stdout.write(`${r.text}\n`);
       return 0;
     }

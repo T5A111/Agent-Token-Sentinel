@@ -194,6 +194,7 @@ export class CircuitBreaker {
       fingerprint: fingerprint?.hash,
       errorName: fingerprint?.errorName,
       message: fingerprint?.message.slice(0, 160),
+      failingTest: fingerprint?.failingTest?.slice(0, 160),
       rawTokens: estimateTokens(log),
       source: input.source,
     };

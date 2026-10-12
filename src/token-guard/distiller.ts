@@ -4,13 +4,19 @@
  *
  * Keeps: the first error headline (+ a continuation line), the failing test
  * name, assertion expected/received, the first *project* call site with
- * ±N lines of source, and a de-duplicated list of further tsc errors.
+ * ±N lines of source, a one-line entry for every *other* failing test, and a
+ * de-duplicated list of further tsc errors.
  * Drops: ANSI codes, progress redraws, node_modules / node:internal /
  * bundler & test-runner internals, repeated lines and summary chatter.
+ *
+ * The budget is dynamic: it grows with the number of distinct failures and
+ * with `escalation` (how many times the same failure has already been seen),
+ * because a model that keeps hitting the same error needs more context, not
+ * less. Nothing is lost: the raw log stays retrievable via `logRef`.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { extractError, isNoiseFrame, parseFrame, type ParsedFrame } from '../circuit-breaker/detector.js';
+import { collectFailures, extractError, isNoiseFrame, parseFrame, type FailureSummary, type ParsedFrame } from '../circuit-breaker/detector.js';
 import { stripAnsi, toProjectPath } from '../utils/normalize.js';
 import { estimateTokens } from '../utils/tokens.js';
 
@@ -21,6 +27,17 @@ export interface DistillOptions {
   contextLines?: number;
   /** Read the call-site file from disk for context (default true). */
   readSource?: boolean;
+  /** Extra tokens granted per additional distinct failure (default 30). */
+  perFailureTokens?: number;
+  /** Hard ceiling for the dynamic budget (default 4 × tokenBudget). */
+  maxTokenBudget?: number;
+  /**
+   * 0 = first time this failure is seen. Each repeat widens the budget by 50%
+   * and the source context by 2 lines: being stuck calls for more evidence.
+   */
+  escalation?: number;
+  /** How the agent can fetch the full log, e.g. `run-12`; printed in the footer. */
+  logRef?: string;
 }
 
 export interface CallSite {
@@ -43,6 +60,10 @@ export interface DistillResult {
   reduction: number;
   originalLines: number;
   droppedNoiseFrames: number;
+  /** Every distinct failure found (the first one is shown in detail). */
+  failures: FailureSummary[];
+  /** Budget actually applied after scaling for failures and escalation. */
+  effectiveBudget: number;
 }
 
 const TSC_LINE = /^(.+?)(?:\((\d+),(\d+)\)|:(\d+):(\d+))\s*[:-]\s*error\s+(TS\d+):\s*(.*)$/;
@@ -59,12 +80,18 @@ const NOISE_LINE = [
 ];
 
 export function distillLog(raw: string, options: DistillOptions = {}): DistillResult {
-  const budget = options.tokenBudget ?? 150;
-  const contextLines = options.contextLines ?? 3;
+  const baseBudget = options.tokenBudget ?? 150;
+  const escalation = Math.max(0, Math.min(options.escalation ?? 0, 4));
   const root = options.root;
   const clean = stripAnsi(raw);
   const lines = dedupeConsecutive(clean.split('\n'));
   const originalTokens = estimateTokens(raw);
+  const failures = collectFailures(clean);
+  const contextLines = Math.min((options.contextLines ?? 3) + 2 * escalation, 10);
+  const budget = Math.min(
+    Math.round((baseBudget + (options.perFailureTokens ?? 30) * Math.min(Math.max(failures.length - 1, 0), 10)) * (1 + 0.5 * escalation)),
+    options.maxTokenBudget ?? baseBudget * 4,
+  );
 
   const extracted = extractError(clean);
   const hasHeadline = extracted.errorName !== 'UnknownError';
@@ -124,14 +151,29 @@ export function distillLog(raw: string, options: DistillOptions = {}): DistillRe
     }
     if (extracted.failingTest) out.push(`  test: ${truncate(extracted.failingTest, 120)}`);
     out.push(...assertionDetails(lines), ...callSiteLines);
+    const others = failures.filter(
+      (f) => !(f.test && f.test === extracted.failingTest) && !(f.errorName === extracted.errorName && f.message === extracted.message),
+    );
+    if (others.length) {
+      out.push(`  also failing (${others.length}):`);
+      for (const f of others) {
+        const err = f.errorName ? `${f.errorName}${f.message ? `: ${truncate(f.message, 90)}` : ''}` : '';
+        out.push(`  • ${[f.test ? truncate(f.test, 80) : '', err].filter(Boolean).join(' — ')}`);
+      }
+    }
   }
 
   if (out.length === 0) out.push(...genericFallback(lines));
 
-  let text = out.join('\n');
-  text = fitBudget(text, budget);
-  const footer = `[sentinel: distilled ${originalTokens}→${estimateTokens(text)} tokens, dropped ${droppedNoiseFrames} framework frames]`;
-  if (estimateTokens(`${text}\n${footer}`) <= budget) text = `${text}\n${footer}`;
+  const footerFor = (body: string) =>
+    `[sentinel: ${originalTokens}→${estimateTokens(body)} tokens, ${droppedNoiseFrames} framework frames hidden` +
+    (failures.length > 1 ? `, ${failures.length} failures` : '') +
+    (escalation ? `, escalated ×${escalation}` : '') +
+    (options.logRef ? ` · full log: sentinel_expand_log run=${options.logRef}` : '') +
+    ']';
+  // Reserve room for the footer: it is what lets the agent get the full log back.
+  let text = fitBudget(out.join('\n'), Math.max(budget - estimateTokens(footerFor('')) - 4, 30));
+  text = `${text}\n${footerFor(text)}`;
 
   const distilledTokens = estimateTokens(text);
   return {
@@ -145,6 +187,8 @@ export function distillLog(raw: string, options: DistillOptions = {}): DistillRe
     reduction: originalTokens > 0 ? 1 - distilledTokens / originalTokens : 0,
     originalLines: raw.split('\n').length,
     droppedNoiseFrames,
+    failures,
+    effectiveBudget: budget,
   };
 }
 
@@ -230,6 +274,14 @@ function genericFallback(lines: string[]): string[] {
 function fitBudget(text: string, budget: number): string {
   if (estimateTokens(text) <= budget) return text;
   const lines = text.split('\n');
+  // Collapse the tail of the "also failing" list (keep the first 3 entries).
+  const bullets = () => lines.map((l, i) => (l.startsWith('  • ') ? i : -1)).filter((i) => i >= 0);
+  let hidden = 0;
+  while (estimateTokens(lines.join('\n')) > budget && bullets().length > 3) {
+    lines.splice(bullets().pop() ?? lines.length - 1, 1);
+    hidden++;
+  }
+  if (hidden) lines.splice((bullets().pop() ?? lines.length - 1) + 1, 0, `  • … ${hidden} more (see full log)`);
   // Drop snippet context lines farthest from the target first (keep the '>' line).
   while (estimateTokens(lines.join('\n')) > budget) {
     const idx = findLastIndex(lines, (l) => /^\s{4}\s\s*\d+ \|/.test(l));

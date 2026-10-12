@@ -1,6 +1,6 @@
 {
   "name": "agent-token-sentinel",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Local-first watchdog and context optimizer for coding agents: breaks whack-a-mole debug loops and distills bloated context.",
   "keywords": [
     "mcp",
@@ -58,7 +58,9 @@
     "mcp": "tsx src/mcp/server.ts",
     "prepare": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
-    "test:pack": "npm run build && node scripts/smoke-pack.mjs"
+    "test:pack": "npm run build && node scripts/smoke-pack.mjs",
+    "bench": "npm run build && node bench/run.mjs",
+    "bench:check": "node bench/run.mjs --self-check && node bench/run.mjs --claude bench/stub-claude.mjs --repeats 2 --out bench/results/stub && node bench/run.mjs --claude bench/stub-claude.mjs --repeats 1 --tasks off-by-one --arms baseline --expect-cheat --out bench/results/stub-cheat"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

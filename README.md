@@ -32,10 +32,14 @@ Coding agents fail in two expensive ways:
 - 🧬 **Error fingerprints**: SHA-256 of `ErrorName + normalized message + project stack + failing test`, after stripping timestamps, absolute paths, `line:col`, memory addresses, UUIDs, durations, ports and temp dirs. Detects `A→A→A`, `A→B→A` and `A→B→A→B`.
 - ⚡ **Circuit breaker**: CLOSED → OPEN → HALF_OPEN, with manual reset (requires a new hypothesis) or a single probe after a cool-down.
 - ⏪ **Safe rollback**: git snapshots via a *temporary index* under `refs/sentinel/*`. Your branch, HEAD, index and stash are never touched. Only agent-touched files are restored, and a backup ref is taken first, so the rollback is itself undoable.
-- 🧪 **Log Distiller**: ANSI stripped; `node_modules`, `node:internal`, Vite/Rollup/Webpack/esbuild/Vitest/Jest frames dropped; keeps the error, the failing test, expected/received, and the **first project call site ±3 lines**. Typical reduction is 95%+.
+- 🧪 **Log Distiller**: ANSI stripped; `node_modules`, `node:internal`, Vite/Rollup/Webpack/esbuild/Vitest/Jest frames dropped; keeps the error, the failing test, expected/received, the **first project call site ±3 lines**, and a one-line entry for **every other failing test**. Typical reduction is 95%+.
+- 📈 **Dynamic budget, nothing lost**: the budget grows with the number of failures, and **widens each time the same failure repeats** (a stuck model needs more evidence, not less). Every raw log is stored; `sentinel_expand_log` pulls a specific failure block, a grep or a line range on demand, instead of re-running the command.
+- 🔀 **Automatic in Claude Code**: build/test Bash commands are transparently routed through `sentinel run`, so the savings do not depend on the model remembering a rule. Same exit code, your permission rules still apply, `# sentinel:raw` opts out.
 - 🌳 **AST Pruner**: uses the TypeScript compiler API to keep target functions, classes or methods plus the same-file types and imports they reference; everything else becomes `// ... [omitted N lines of unrelated logic]`. Original line numbers are preserved. Other languages fall back to a brace/indent heuristic.
 - 🗜️ **Episodic History Compactor**: every 3 debug rounds →
   `[Compacted]: Rounds 1-3 attempted null-checks at src/auth.ts#login, failed with TypeError ×3. Reverted.`
+  Each episode also keeps its **status (unresolved / reverted / resolved), the exact error and the failing test**, so what was tried survives.
+- 🧠 **Memory that survives compaction**: when Claude Code compacts, resumes or clears a session, a `SessionStart` hook re-injects the open problem, what was already tried and the latest dead end (≤ 400 tokens). Silent when nothing is pending.
 - 🔌 **Hard enforcement**: pre-write hooks for Claude Code, Cursor and Windsurf exit with code 2 to block writes while the circuit is OPEN. A git pre-commit hook rejects commits.
 - 🧹 **Safe one-command uninstall**: `uninstall --all` removes only what `install` added; your own settings stay byte-for-byte unchanged, and recovery data is kept unless you ask for `--purge`. See [Uninstall](#uninstall).
 
@@ -109,13 +113,17 @@ The exit code passes through unchanged, and a distilled failure is printed inste
 { "mcpServers": { "token-sentinel": { "command": "node", "args": ["/abs/path/dist/mcp/server.js"] } } }
 ```
 
-**`.claude/settings.json`** (hooks: PreToolUse blocks writes with exit 2 while OPEN; PostToolUse records edits and test runs)
+**`.claude/settings.json`**. The hooks:
+- **PreToolUse** blocks writes with exit 2 while OPEN, and routes build/test Bash commands through `sentinel run`.
+- **PostToolUse** records edits and test runs.
+- **SessionStart** re-injects the debugging memory after a compact, resume or clear.
 ```json
 {
   "hooks": {
-    "PreToolUse":  [{ "matcher": "Edit|MultiEdit|Write|NotebookEdit",      "hooks": [{ "type": "command", "command": "node \"/abs/path/dist/cli/index.js\" hook claude", "timeout": 30 }] }],
+    "PreToolUse":  [{ "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash", "hooks": [{ "type": "command", "command": "node \"/abs/path/dist/cli/index.js\" hook claude", "timeout": 30 }] }],
     "PostToolUse": [{ "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash", "hooks": [{ "type": "command", "command": "node \"/abs/path/dist/cli/index.js\" hook claude", "timeout": 30 }] }],
-    "PostToolUseFailure": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "node \"/abs/path/dist/cli/index.js\" hook claude", "timeout": 30 }] }]
+    "PostToolUseFailure": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "node \"/abs/path/dist/cli/index.js\" hook claude", "timeout": 30 }] }],
+    "SessionStart": [{ "matcher": "startup|resume|clear|compact", "hooks": [{ "type": "command", "command": "node \"/abs/path/dist/cli/index.js\" hook claude", "timeout": 30 }] }]
   }
 }
 ```
@@ -167,7 +175,7 @@ Windsurf reads MCP servers only from the user-global `~/.codeium/windsurf/mcp_co
 
 | Client | MCP tools | Hard write block | Auto-record edits | Auto-record test runs |
 |---|---|---|---|---|
-| Claude Code | ✅ | ✅ PreToolUse exit 2 | ✅ PostToolUse | ✅ (`sentinel run` for exact exit codes) |
+| Claude Code | ✅ | ✅ PreToolUse exit 2 | ✅ PostToolUse | ✅ auto-routed through `sentinel run` (exact exit codes, distilled output) |
 | Cursor *(beta)* | ✅ | ✅ preToolUse exit 2 / `deny` | ✅ afterFileEdit | ✅ afterShellExecution |
 | Windsurf *(beta)* | ✅ (global config) | ✅ pre_write_code exit 2 | ✅ post_write_code | ✅ post_run_command |
 | Other MCP clients | ✅ | advisory (`sentinel_guard_edit`) | `sentinel_record_edit` | `sentinel_record_run` / `sentinel run` |
@@ -241,6 +249,7 @@ Run `uninstall` in your projects **before** removing the package itself; otherwi
 | `sentinel_reset_circuit {hypothesis}` | Close the circuit; requires a new root-cause hypothesis (≥ 15 chars). |
 | `sentinel_checkpoint {label?}` | Snapshot the working tree as a rollback target. |
 | `sentinel_distill_log {log, tokenBudget?}` | Compress a log. |
+| `sentinel_expand_log {run?, failure?, grep?, from?, to?}` | Pull part of a stored raw log (a failure block, matching lines, a range) instead of re-running. |
 | `sentinel_prune_file {file, targets[], lineNumbers?}` | Read only the needed symbols. |
 | `sentinel_compact_history {}` | Fold old rounds into `[Compacted]` lines. |
 
@@ -251,6 +260,7 @@ Resources: `sentinel://state`, `sentinel://dead-ends`, `sentinel://history`.
 ```
 sentinel run [--raw] -- <cmd...>      sentinel status [--json]        sentinel reset [--hypothesis "..."]
 sentinel checkpoint [label]           sentinel rollback [id]          sentinel distill [file|-] [--budget N]
+sentinel log [run-id] [--failure N] [--grep RE] [--from N --to M]
 sentinel prune <file> <symbol...>     sentinel compact | history      sentinel dead-ends
 sentinel install [--claude|--cursor|--windsurf|--git|--all] [--global] [--command "..."] [--dry-run]
 sentinel uninstall [--claude|--cursor|--windsurf|--git|--all] [--global] [--purge] [--dry-run]
@@ -273,7 +283,11 @@ All fields are optional. An invalid file falls back to the defaults and shows a 
 | `hotspotRounds` | `3` | Consecutive failing rounds editing the same function → HIGH-risk warning. |
 | `cooldownMs` | `300000` | Time OPEN before one HALF_OPEN probe is allowed. |
 | `autoRollback` | `true` | Restore agent-touched files on trip (`false` = block only). |
-| `distillTokenBudget` | `150` | Max tokens of a distilled log. |
+| `distillTokenBudget` | `150` | Base budget of a distilled log (one failure, first sighting). |
+| `distillMaxBudget` | `600` | Ceiling after scaling: +30 tokens per extra failure, +50% per repeat of the same failure. |
+| `maxLogs` | `30` | Raw logs kept in `.sentinel/logs/` for `sentinel_expand_log`. |
+| `autoWrapTests` | `true` | Claude Code: route build/test Bash commands through `sentinel run`. |
+| `memoryTokenBudget` | `400` | Max size of the memory re-injected after compaction / resume. |
 | `compactEvery` | `3` | Debug rounds per compacted episode. |
 | `contextLines` | `3` | Source lines shown around the call site. |
 | `maxCheckpoints` | `20` | Checkpoint refs kept. |
@@ -300,10 +314,25 @@ The suite (`tests/self-test.ts`) covers the four required scenarios plus rollbac
 | 4 | 4 consecutive failures | OPEN, Dead-End JSON+MD, writes blocked (Claude/Cursor/Windsurf hooks exit 2), HALF_OPEN, reset |
 | 5 | real git repo | agent files restored, new file removed, human edit untouched, HEAD/index/stash untouched, backup ref |
 | 6 | 252-line TS file | target + transitively referenced types + used import kept; the rest folded |
-| 7 | 6 debug rounds | auto `[Compacted]` after round 4; ≥ 70% of history tokens freed (82.6%) |
+| 7 | 6 debug rounds | auto `[Compacted]` after round 4 with status + error evidence; ≥ 70% of recorded history tokens saved (82%) |
 | 8 | MCP client ↔ server | all tools listed and callable; validation and path-traversal errors are tool errors |
 | 9 | `sentinel run`, `install --all`, git pre-commit | exit code passthrough, distilled output, idempotent config merge, commit rejected while OPEN |
 | 10 | install over existing user configs → `uninstall` | dry-run changes nothing; user files byte-identical afterwards; `.sentinel/` + refs kept until `--purge`; foreign hooks and broken files untouched |
+| 11 | 4 failing tests in one log | all 4 listed; budget scales; raw log stored, failure #3 / grep / ranges expandable; old logs pruned |
+| 12 | same failure 3× | budget and source context widen each time (±3 → ±5 → ±7 lines); a new failure resets it |
+| 13 | Claude Code Bash `npm test` | rewritten via `updatedInput` without auto-approval; watch/dev/background/heredoc/opt-out untouched; quoting + exit code identical under bash |
+| 14 | compact/resume after 4 failures | open problem, tried approaches and log pointer injected within budget; silent on clean projects and once green |
+
+### A/B benchmark (does it actually help?)
+
+The self-tests prove the mechanisms work. They do **not** prove that a model solves more tasks or spends less. For that, `bench/` holds 5 debugging tasks, each built around a typical agent failure mode: off-by-one, a shared root cause that invites whack-a-mole, an async cache bug, 4 independent bugs, and a misleading stack trace. The runner executes the same model on the same tasks **with and without** the sentinel:
+
+```bash
+npm run bench:check                              # free: validates fixtures + plumbing with a stub (also in CI)
+npm run bench -- --repeats 5 --model <model-id>  # real run with Claude Code headless: costs your Claude usage
+```
+
+Each trial runs in an isolated temp git repo. The user's global settings and MCP servers are excluded in both arms, and spend is capped per trial (`--max-budget-usd`, default $2). The original tests are restored before scoring, so editing the tests never counts as a fix. The report lists success rate with 95% CIs, cost, input tokens (cache included), turns, breaker trips and a two-proportion significance test. With few repeats it says plainly that the result is a smoke test, not proof.
 
 ## Project layout
 
@@ -323,6 +352,8 @@ SKILL.md              rules for the agent
 ## Limitations
 
 - Token counts are estimated offline (~4 chars/token, CJK ≈ 1 token/char), with roughly ±15% error.
+- The history compactor cannot delete anything from the agent's own transcript; the client manages that. The "tokens saved" figure is accounting over recorded history. It becomes real when the model works from the compacted view: after Claude Code compacts or resumes (the memory is injected automatically), or when the model reads `sentinel://history`.
+- Measured savings depend on your model, tasks and prompt caching. Run the A/B benchmark on your own workload before relying on a number.
 - Rollback needs a git repository. Without one, the sentinel runs in block-only mode.
 - Precise AST pruning covers TS/JS (`.ts .tsx .js .jsx .mts .cts .mjs .cjs`). Other languages use a heuristic.
 - An agent determined to bypass the guard (e.g. writing files through the shell) can still do so. The hooks gate the editor's write tools, and the git hook gates commits.
