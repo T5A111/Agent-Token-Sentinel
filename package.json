@@ -14,13 +14,13 @@
   ],
   "author": "T5A111",
   "license": "MIT",
-  "homepage": "https://github.com/T5A111/Token-Sentinel#readme",
+  "homepage": "https://github.com/T5A111/Agent-Token-Sentinel#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/T5A111/Token-Sentinel.git"
+    "url": "git+https://github.com/T5A111/Agent-Token-Sentinel.git"
   },
   "bugs": {
-    "url": "https://github.com/T5A111/Token-Sentinel/issues"
+    "url": "https://github.com/T5A111/Agent-Token-Sentinel/issues"
   },
   "type": "module",
   "engines": {
