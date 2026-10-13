@@ -8,7 +8,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { CheckpointManager } from './circuit-breaker/checkpoint.js';
 import { CircuitBreaker, type RunOutcome, type TripResult } from './circuit-breaker/breaker.js';
 import { loadConfig, type SentinelConfig } from './config.js';
-import { compactState, historyStats, renderHistory, type CompactionResult, type HistoryStats } from './token-guard/compactor.js';
+import { buildMemory, compactState, historyStats, renderHistory, type CompactionResult, type HistoryStats } from './token-guard/compactor.js';
 import { distillLog, type DistillResult } from './token-guard/distiller.js';
 import { pruneSource, type PruneOptions, type PruneResult } from './token-guard/pruner.js';
 import type { Checkpoint, DeadEndLog, EventSource, GuardDecision, RiskAssessment, RollbackResult, SentinelState } from './types.js';
@@ -16,7 +16,8 @@ import { findEnclosingSymbols } from './utils/ast.js';
 import { diffLines, parseUnifiedDiff, type LineDiff } from './utils/diff.js';
 import { git } from './utils/git.js';
 import { sha256 } from './utils/hash.js';
-import { toPosix } from './utils/normalize.js';
+import { stripAnsi, toPosix } from './utils/normalize.js';
+import { sliceLog, type ExpandLogOptions, type ExpandLogResult } from './token-guard/log-store.js';
 import { StateStore } from './utils/state-store.js';
 
 export interface SentinelOptions {
@@ -155,11 +156,24 @@ export class Sentinel {
     const log = params.log ?? '';
     return this.store.update((state) => {
       const outcome = this.breaker.recordRun(state, params);
+      if (log) outcome.run.logId = this.saveLog(`run-${outcome.run.seq}`, log, state);
       if (outcome.trip) this.refreshSnapshots(outcome.trip.deadEnd.rollback);
       const compaction = compactState(state, { compactEvery: this.config.compactEvery }, this.now());
-      const distilled = params.exitCode !== 0 && log ? this.distill(log) : undefined;
+      const distilled =
+        params.exitCode !== 0 && log ? this.distill(log, { escalation: repeatCount(state) - 1, logRef: outcome.run.logId }) : undefined;
       return { ...outcome, distilled, compaction: compaction.episodes.length ? compaction : undefined };
     });
+  }
+
+  /** Raw log of a recorded run (latest by default), sliced so it never floods the context. */
+  expandLog(options: ExpandLogOptions = {}): ExpandLogResult {
+    const state = this.store.load();
+    const runs = state.runs.filter((r) => r.logId);
+    const run = options.run ? runs.find((r) => r.logId === options.run || String(r.seq) === options.run) : runs[runs.length - 1];
+    if (!run?.logId) throw new Error(options.run ? `No stored log for ${options.run}` : 'No stored logs yet');
+    const raw = this.store.readArtifact(`logs/${run.logId}.log`);
+    if (raw === undefined) throw new Error(`Log ${run.logId} was pruned (only the last ${this.config.maxLogs} are kept)`);
+    return sliceLog(raw, { ...options, header: `${run.logId} · \`${run.command}\` · exit ${run.exitCode}` });
   }
 
   /** Close the circuit. Remaining rounds are compacted first so the lesson survives the reset. */
@@ -188,8 +202,33 @@ export class Sentinel {
   /* Token guard                                                        */
   /* ---------------------------------------------------------------- */
 
-  distill(log: string, tokenBudget?: number): DistillResult {
-    return distillLog(log, { root: this.root, tokenBudget: tokenBudget ?? this.config.distillTokenBudget, contextLines: this.config.contextLines });
+  distill(log: string, options: { tokenBudget?: number; escalation?: number; logRef?: string } = {}): DistillResult {
+    return distillLog(log, {
+      root: this.root,
+      tokenBudget: options.tokenBudget ?? this.config.distillTokenBudget,
+      maxTokenBudget: this.config.distillMaxBudget,
+      contextLines: this.config.contextLines,
+      escalation: options.escalation,
+      logRef: options.logRef,
+    });
+  }
+
+  /** Persist a raw log and prune the oldest beyond `maxLogs`. Best-effort: never fails a run. */
+  private saveLog(id: string, log: string, state: SentinelState): string | undefined {
+    try {
+      this.store.writeArtifact(`logs/${id}.log`, stripAnsi(log));
+      const keep = new Set(state.runs.map((r) => r.logId).filter(Boolean).slice(-(this.config.maxLogs - 1)));
+      keep.add(id);
+      for (const r of state.runs) {
+        if (r.logId && !keep.has(r.logId)) {
+          this.store.deleteArtifact(`logs/${r.logId}.log`);
+          r.logId = undefined;
+        }
+      }
+      return id;
+    } catch {
+      return undefined;
+    }
   }
 
   prune(file: string, options: PruneOptions): PruneResult {
@@ -212,6 +251,12 @@ export class Sentinel {
 
   history(): string {
     return renderHistory(this.store.load());
+  }
+
+  /** Debugging memory to re-inject after a session compacts / resumes (undefined when nothing is pending). */
+  memory(options: { reason?: string } = {}): string | undefined {
+    const state = this.store.load();
+    return buildMemory(state, { reason: options.reason, tokenBudget: this.config.memoryTokenBudget, latestDeadEnd: this.deadEnds(1)[0]?.log });
   }
 
   deadEnds(limit = 3): Array<{ log: DeadEndLog; markdown: string }> {
@@ -307,6 +352,16 @@ export class Sentinel {
     const before = params.before ?? this.readBefore(rel);
     return [{ file: rel, diff: diffLines(before, after), after }];
   }
+}
+
+/** How many runs in a row (ending with the latest) share the latest failure fingerprint. */
+function repeatCount(state: SentinelState): number {
+  const runs = state.runs;
+  const last = runs[runs.length - 1];
+  if (!last || last.exitCode === 0 || !last.fingerprint) return 1;
+  let n = 0;
+  for (let i = runs.length - 1; i >= 0 && runs[i]?.fingerprint === last.fingerprint; i--) n++;
+  return n;
 }
 
 /** List Dead-End markdown files without instantiating a Sentinel (used by the CLI). */

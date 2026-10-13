@@ -14,7 +14,8 @@ already enforce some of these rules; follow them anyway.
 
 | Moment | Do this | Why |
 |---|---|---|
-| Running a build / test / type-check | `sentinel run -- <cmd>` (preferred) **or** run it, then `sentinel_record_run {command, exitCode, log}` | Records the exit code, fingerprints the error, returns a ≈150-token distilled failure. |
+| Running a build / test / type-check | Just run it. In Claude Code it is routed through `sentinel run` automatically; elsewhere use `sentinel run -- <cmd>` **or** call `sentinel_record_run {command, exitCode, log}` afterwards | Records the exit code, fingerprints the error, returns a distilled failure listing **every** failing test. |
+| The distilled failure is not enough | `sentinel_expand_log {run, failure: N}` / `{grep: "…"}` / `{from, to}` | Pulls exactly the raw lines you need from the stored log. Never re-run a slow test suite just to see more output. |
 | Before editing a file while fixing a failure | `sentinel_guard_edit {file, intent}` | Snapshots the file; answers ALLOW / WARN / BLOCK. |
 | After editing (only if no editor hook is installed) | `sentinel_record_edit {file}` | Feeds the flip-flop detector. |
 | A log longer than ~40 lines | `sentinel_distill_log {log}` | Strips ANSI, node_modules and bundler frames; keeps error + first project call site ±3 lines. |
@@ -28,7 +29,8 @@ already enforce some of these rules; follow them anyway.
    around: do not switch tools, shell redirection (`cat > file`), or another
    path to write anyway.
 2. **Never paste a raw log** into your reasoning or into a reply when a
-   distilled version is available.
+   distilled version is available. If you need more, expand the specific
+   part with `sentinel_expand_log`; use `# sentinel:raw` only as a last resort.
 3. **Never rewrite a whole file** to change a few lines. Prune, then edit
    the numbered lines.
 4. **Never retry an approach listed under "Rejected approaches"** in a
@@ -49,7 +51,8 @@ already enforce some of these rules; follow them anyway.
 | `hotspotRounds` | 3 | Same function edited in 3 consecutive failing rounds → **HIGH risk warning** |
 | `cooldownMs` | 300000 | After 5 min OPEN, one HALF_OPEN probe attempt is allowed |
 | `autoRollback` | true | On trip, agent-touched files are restored to the last clean checkpoint |
-| `distillTokenBudget` | 150 | Max tokens of a distilled log |
+| `distillTokenBudget` | 150 | Base tokens of a distilled log; grows with the number of failures and when the same failure repeats (up to `distillMaxBudget` 600) |
+| `autoWrapTests` | true | Claude Code routes build/test commands through `sentinel run`; add `# sentinel:raw` to a command to see raw output instead |
 | `compactEvery` | 3 | Rounds per `[Compacted]` episode |
 | `contextLines` | 3 | Source lines around the call site |
 
@@ -89,10 +92,22 @@ clean checkpoint (a backup of your edits is kept under
 one probe attempt. Edits are allowed until the next recorded run: pass →
 CLOSED, fail → OPEN again.
 
-## 5. Reading sentinel output
+## 5. After the conversation is compacted
+
+If you see a block starting with `[agent-token-sentinel memory · after compact]`,
+it is the authoritative record of this debugging session: the open problem,
+what was already tried (do not retry it) and where the full logs are. Continue
+from it rather than re-discovering the same facts.
+
+## 6. Reading sentinel output
 
 - `✖ TypeError: … / at fn (src/x.ts:42:7) / > 42 | code` — the distilled
   error; the `>` line is the first project call site.
+- `also failing (3): • test — Error: …` — the other failures in the same run.
+  Fix them together when they share a cause; otherwise expect them next.
+- `[sentinel: … · full log: sentinel_expand_log run=run-12]` — where the raw
+  log is. `escalated ×N` means you have hit this exact failure N+1 times: the
+  extra context is there to make you look wider, not to patch the same line.
 - `[Compacted]: Rounds 1-3 attempted null-checks at src/auth.ts#login, failed with TypeError ×3. Reverted.`
   — everything you need to remember about those rounds; drop the details.
 - `⚠️ Hotspot: …` — you keep patching the same function; widen the view.

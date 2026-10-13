@@ -40,8 +40,12 @@ export interface RunRecord {
   errorName?: string;
   /** Short, normalized error message. */
   message?: string;
+  /** Failing test name, when the runner reported one. */
+  failingTest?: string;
   /** Token estimate of the raw log, for compaction accounting. */
   rawTokens: number;
+  /** Id of the stored raw log (`.sentinel/logs/<id>.log`), retrievable with sentinel_expand_log. */
+  logId?: string;
   source: EventSource;
 }
 
@@ -56,12 +60,23 @@ export interface Checkpoint {
   green: boolean;
 }
 
+export type EpisodeStatus = 'resolved' | 'unresolved' | 'reverted';
+
 export interface CompactedEpisode {
   fromRound: number;
   toRound: number;
+  /** One-line summary (`[Compacted]: Rounds 1-3 attempted …`). */
   summary: string;
   freedTokens: number;
   createdAt: number;
+  /** Structured facts kept so the lesson survives compaction (absent on pre-0.2 state). */
+  status?: EpisodeStatus;
+  approach?: string;
+  location?: string;
+  errors?: Array<{ name: string; message?: string; count: number }>;
+  /** Failing test names seen in the episode. */
+  tests?: string[];
+  files?: string[];
 }
 
 export interface CircuitState {

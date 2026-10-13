@@ -1,0 +1,8 @@
+{
+  "title": "Pagination returns the wrong page",
+  "prompt": "The pagination tests are failing. Fix the bug in src/ so that `npm test` passes. Do not modify the tests.",
+  "testCommand": "npm test",
+  "protectedPaths": [
+    "tests"
+  ]
+}

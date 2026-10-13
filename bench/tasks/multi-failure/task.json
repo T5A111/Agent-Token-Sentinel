@@ -1,0 +1,8 @@
+{
+  "title": "Four independent bugs in one module",
+  "prompt": "Several string utility tests are failing. Fix src/strings.js so that `npm test` passes. Do not modify the tests.",
+  "testCommand": "npm test",
+  "protectedPaths": [
+    "tests"
+  ]
+}

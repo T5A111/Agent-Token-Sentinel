@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { assessRisk, computeReciprocity, detectFingerprintPattern, detectOscillation, fingerprintError } from '../src/circuit-breaker/detector.js';
-import { handleHook } from '../src/cli/hooks.js';
+import { handleHook, shellQuote, shouldWrapCommand, wrapCommand } from '../src/cli/hooks.js';
 import { defaultCommands, install } from '../src/cli/install.js';
 import { uninstall } from '../src/cli/uninstall.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
@@ -443,7 +443,11 @@ test('7. History compactor: auto-compacts every 3 rounds; 6 rounds free ≥ 70% 
   assert.ok(c.stats.reduction >= 0.7, `freed ${(c.stats.reduction * 100).toFixed(1)}%`);
   assert.match(c.history, /\[Compacted\]: Rounds 4-5 attempted null-checks/);
   assert.match(c.history, /Round 6: edited src\/auth\.ts#login/);
-  assert.ok(c.history.split('\n').length <= 3, c.history);
+  // Structured episodes keep the evidence a model needs to avoid repeating them.
+  assert.match(c.history, /status: UNRESOLVED/);
+  assert.match(c.history, /error: TypeError: Cannot read properties of null \(reading 'session0'\)/);
+  assert.match(c.history, /\[log run-\d+\]/, 'recent round points at its stored raw log');
+  assert.ok(c.history.split('\n').length <= 8, c.history);
   metric(`T7 history ${c.stats.originalTokens} → ${c.stats.currentTokens} tokens (freed ${(c.stats.reduction * 100).toFixed(1)}%)`);
   metric(`T7 compacted view:\n${c.history.split('\n').map((l) => `      │ ${l}`).join('\n')}`);
 });
@@ -461,7 +465,7 @@ test('8. MCP server: lists tools/resources and serves them over a real MCP clien
 
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name).sort();
-  for (const required of ['sentinel_guard_edit', 'sentinel_distill_log', 'sentinel_check_circuit', 'sentinel_record_run', 'sentinel_reset_circuit', 'sentinel_prune_file', 'sentinel_compact_history', 'sentinel_checkpoint', 'sentinel_record_edit']) {
+  for (const required of ['sentinel_guard_edit', 'sentinel_distill_log', 'sentinel_check_circuit', 'sentinel_record_run', 'sentinel_reset_circuit', 'sentinel_prune_file', 'sentinel_compact_history', 'sentinel_checkpoint', 'sentinel_record_edit', 'sentinel_expand_log']) {
     assert.ok(names.includes(required), `missing tool ${required}`);
   }
   const text = (res: unknown) => ((res as { content: Array<{ text: string }> }).content[0]?.text ?? '');
@@ -514,7 +518,8 @@ test('9. CLI: `sentinel run` distills a failing command; `sentinel install --all
     assert.ok(existsSync(join(root, f)), `missing ${f}`);
   }
   const claude = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8'));
-  assert.equal(claude.hooks.PreToolUse[0].matcher, 'Edit|MultiEdit|Write|NotebookEdit');
+  assert.equal(claude.hooks.PreToolUse[0].matcher, 'Edit|MultiEdit|Write|NotebookEdit|Bash');
+  assert.equal(claude.hooks.SessionStart[0].matcher, 'startup|resume|clear|compact');
   const cursor = JSON.parse(readFileSync(join(root, '.cursor/hooks.json'), 'utf8'));
   assert.equal(cursor.version, 1);
   assert.ok(cursor.hooks.preToolUse && cursor.hooks.afterFileEdit && cursor.hooks.afterShellExecution);
@@ -613,6 +618,170 @@ test('10. Uninstall: removes only what install added, keeps user settings and re
   assert.equal(readFileSync(join(root, '.mcp.json'), 'utf8'), '{ not json');
   assert.ok(safe.warnings.some((w) => w.includes('could not parse')));
   metric(`T10 install → uninstall restored ${Object.keys(before).length} user paths byte-for-byte; --purge removed ${purge.refsDeleted.length} ref(s) + .sentinel/`);
+});
+
+/* ================================================================== */
+/* Test 11 — Multi-failure distillation + raw-log expansion              */
+/* ================================================================== */
+
+function multiFailureLog(root: string, n: number): string {
+  const blocks: string[] = [' RUN  v1.6.0 ' + root, ''];
+  for (let i = 1; i <= n; i++) {
+    blocks.push(
+      ` FAIL  tests/cart.test.ts > cart > case ${i}`,
+      `AssertionError: expected ${i} to be ${i + 1} // Object.is equality`,
+      `    at tests/cart.test.ts:${10 * i}:21`,
+      ...Array.from({ length: 15 }, (_, k) => `    at run (${root}/node_modules/@vitest/runner/dist/index.js:${k}:9)`),
+      '',
+    );
+  }
+  blocks.push(` Test Files  1 failed (1)`, `      Tests  ${n} failed | 2 passed (${n + 2})`);
+  return blocks.join('\n');
+}
+
+test('11. Distiller lists every failure, scales its budget, and the raw log stays expandable', () => {
+  const root = tempDir('t11');
+  const s = new Sentinel({ root, disableGit: true });
+  const log = multiFailureLog(root, 4);
+  const r = s.recordRun({ command: 'npx vitest run', exitCode: 1, log, source: 'test' });
+  const d = r.distilled!;
+  assert.equal(d.failures.length, 4, JSON.stringify(d.failures));
+  assert.match(d.text, /AssertionError: expected 1 to be 2/);
+  assert.match(d.text, /also failing \(3\)/);
+  for (const i of [2, 3, 4]) assert.match(d.text, new RegExp(`case ${i} — AssertionError: expected ${i} to be ${i + 1}`));
+  assert.ok(d.effectiveBudget > 150, `budget scaled with failures: ${d.effectiveBudget}`);
+  assert.ok(d.distilledTokens <= d.effectiveBudget, `${d.distilledTokens} <= ${d.effectiveBudget}`);
+  assert.ok(!/node_modules/.test(d.text));
+  assert.match(d.text, /full log: sentinel_expand_log run=run-\d+/, 'footer tells the agent how to get the raw log');
+
+  // Nothing is lost: the stored raw log can be sliced on demand.
+  const third = s.expandLog({ failure: 3 });
+  assert.match(third.text, /FAIL {2}tests\/cart\.test\.ts > cart > case 3/);
+  assert.match(third.text, /expected 3 to be 4/);
+  assert.match(third.text, /node_modules\/@vitest\/runner/, 'framework frames are available when explicitly requested');
+  assert.ok(!third.text.includes('case 4'), 'only the requested block');
+  const grep = s.expandLog({ grep: 'expected 4 to be 5', context: 0 });
+  assert.equal(grep.returnedLines, 1);
+  const range = s.expandLog({ from: 1, to: 3 });
+  assert.equal(range.returnedLines, 3);
+  const capped = s.expandLog({ maxTokens: 120 });
+  assert.equal(capped.truncated, true);
+  assert.match(capped.text, /Narrow with from\/to, grep or failure/);
+  assert.throws(() => s.expandLog({ run: 'run-999' }), /No stored log/);
+
+  // Old logs are pruned to maxLogs.
+  const small = new Sentinel({ root: tempDir('t11b'), disableGit: true, config: { maxLogs: 2, sameFingerprintLimit: 99, maxConsecutiveFailures: 99 } });
+  for (let i = 0; i < 4; i++) small.recordRun({ command: 'npm test', exitCode: 1, log: `Error: e${i}`, source: 'test' });
+  const kept = readdirSync(join(small.root, '.sentinel', 'logs'));
+  assert.equal(kept.length, 2, kept.join(','));
+  metric(`T11 4 failures → all listed in ${d.distilledTokens} tokens (budget ${d.effectiveBudget}); failure #3 expanded to ${third.returnedLines} raw lines`);
+});
+
+test('12. Being stuck widens the budget: the same failure again gets more context, not less', () => {
+  const root = tempDir('t12');
+  const src = Array.from({ length: 60 }, (_, i) => `const line${i + 1} = ${i + 1};`);
+  writeFile(root, 'src/calc.ts', src.join('\n'));
+  const log = ['TypeError: total is not a function', `    at compute (${root}/src/calc.ts:30:5)`].join('\n');
+  const s = new Sentinel({ root, disableGit: true, config: { sameFingerprintLimit: 99, maxConsecutiveFailures: 99 } });
+  const first = s.recordRun({ command: 'npm test', exitCode: 1, log, source: 'test' }).distilled!;
+  const second = s.recordRun({ command: 'npm test', exitCode: 1, log, source: 'test' }).distilled!;
+  const third = s.recordRun({ command: 'npm test', exitCode: 1, log, source: 'test' }).distilled!;
+  assert.ok(second.effectiveBudget > first.effectiveBudget && third.effectiveBudget > second.effectiveBudget);
+  assert.equal(first.callSite?.snippet.length, 7, '±3 lines the first time');
+  assert.equal(second.callSite?.snippet.length, 11, '±5 lines on the first repeat');
+  assert.equal(third.callSite?.snippet.length, 15, '±7 lines on the second repeat');
+  assert.match(third.text, /escalated ×2/);
+  // A different failure resets the escalation.
+  const other = s.recordRun({ command: 'npm test', exitCode: 1, log: 'RangeError: bad index\n    at compute (src/calc.ts:30:5)', source: 'test' }).distilled!;
+  assert.equal(other.effectiveBudget, first.effectiveBudget);
+  metric(`T12 budget ${first.effectiveBudget} → ${second.effectiveBudget} → ${third.effectiveBudget} tokens; context ±3 → ±5 → ±7 lines`);
+});
+
+/* ================================================================== */
+/* Test 13 — Auto-wrapping build/test commands (Claude Code)            */
+/* ================================================================== */
+
+test('13. Claude Code: test commands are routed through `sentinel run` transparently (opt-out + safety rules)', () => {
+  const root = tempDir('t13');
+  sh(root, 'init', '-q');
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'index.ts');
+  const prefix = `"${process.execPath.replace(/\\/g, '/')}" --import "${import.meta.resolve('tsx')}" "${cli.replace(/\\/g, '/')}"`;
+  const pre = (command: string, extra: Record<string, unknown> = {}) =>
+    handleHook('claude', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'run tests', ...extra }, cwd: root }, { root, cliPrefix: prefix });
+
+  const wrapped = pre('npm test');
+  const out = JSON.parse(wrapped.stdout ?? '{}');
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(out.hookSpecificOutput.permissionDecision, undefined, 'never auto-approves: user permission rules still apply');
+  assert.equal(out.hookSpecificOutput.updatedInput.description, 'run tests', 'other tool input fields are preserved');
+  assert.equal(out.hookSpecificOutput.updatedInput.command, `${prefix} run --wrapped --shell bash -- 'npm test'`);
+  // The PostToolUse hook must not record the wrapped run a second time (sentinel run already did).
+  const post = handleHook('claude', { hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: out.hookSpecificOutput.updatedInput.command }, tool_response: { stdout: 'FAIL x', exit_code: 1 }, cwd: root }, { root });
+  assert.equal(post.exitCode, 0);
+  assert.equal(new Sentinel({ root, disableGit: true }).status().consecutiveFailures, 0, 'no double counting');
+
+  for (const cmd of ['ls -la', 'npm run dev', 'npx vitest --watch', 'npm start', 'npm test # sentinel:raw', 'npm test &', 'sentinel run -- npm test', "cat <<'EOF' > a.txt\ntest\nEOF"]) {
+    assert.equal(pre(cmd).stdout, undefined, `must not wrap: ${cmd}`);
+  }
+  assert.equal(pre('npm test', { run_in_background: true }).stdout, undefined, 'background tasks are left alone');
+  assert.ok(shouldWrapCommand('cd pkg && npx vitest run', DEFAULT_CONFIG.runCommandPattern));
+  assert.ok(shouldWrapCommand('cargo test', DEFAULT_CONFIG.runCommandPattern));
+
+  // The wrapped command must behave exactly like the original under bash: quoting, exit code, output.
+  const tricky = `node -e "console.log('it' + \\"'s\\" + ' a \\$HOME test'); process.exit(4)" && echo never`;
+  assert.equal(shellQuote("a'b"), `'a'\\''b'`);
+  const direct = spawnSync('bash', ['-c', tricky], { encoding: 'utf8', cwd: root });
+  const viaSentinel = spawnSync('bash', ['-c', wrapCommand(tricky, prefix)], { encoding: 'utf8', cwd: root, env: { ...process.env, SENTINEL_ROOT: root } });
+  assert.equal(direct.status, 4);
+  assert.equal(viaSentinel.status, 4, viaSentinel.stderr + viaSentinel.stdout);
+  assert.match(viaSentinel.stdout, /failed \(exit 4\)/);
+  assert.match(direct.stdout, /it's a \$HOME test/);
+  const body = new Sentinel({ root, disableGit: true }).expandLog().text.split('\n').slice(1).join('\n'); // drop the header (it echoes the command)
+  assert.match(body, /it's a \$HOME test/, 'the inner command ran with its quoting intact');
+  assert.ok(!/never/.test(body), '&& short-circuit preserved');
+
+  // Opt-out via config.
+  writeFile(root, '.sentinel/config.json', JSON.stringify({ autoWrapTests: false }));
+  assert.equal(pre('npm test').stdout, undefined);
+  // Other clients cannot rewrite commands: their pre-shell hooks are ignored.
+  assert.equal(handleHook('cursor', { hook_event_name: 'preToolUse', tool_name: 'run_terminal_cmd', tool_input: { command: 'npm test' } }, { root }).stdout, undefined);
+  metric('T13 `npm test` → wrapped (no auto-approve); 9 unsafe/irrelevant commands untouched; exit code + quoting identical under bash');
+});
+
+/* ================================================================== */
+/* Test 14 — Debugging memory survives Claude Code compaction           */
+/* ================================================================== */
+
+test('14. After Claude Code compacts/resumes, the sentinel re-injects what was tried and what is still failing', () => {
+  const root = tempDir('t14');
+  const session = (source: string) => handleHook('claude', { hook_event_name: 'SessionStart', source, cwd: root }, { root });
+  assert.equal(session('compact').stdout, undefined, 'nothing to say on a clean project');
+
+  const s = new Sentinel({ root, disableGit: true, config: { maxConsecutiveFailures: 99, sameFingerprintLimit: 99 } });
+  let content = 'export function login(user) {\n  return user.session.id;\n}\n';
+  for (let i = 0; i < 4; i++) {
+    const next = content.replace('  return', `  if (user?.session${i} == null) return null;\n  return`);
+    s.recordEdit({ file: 'src/auth.ts', before: content, after: next, source: 'test' });
+    content = next;
+    s.recordRun({ command: 'npx vitest run', exitCode: 1, log: ` FAIL  tests/auth.test.ts > auth > login\nTypeError: Cannot read properties of null (reading 'id')\n    at login (src/auth.ts:2:20)`, source: 'test' });
+  }
+  const res = session('compact');
+  const ctx = JSON.parse(res.stdout ?? '{}').hookSpecificOutput;
+  assert.equal(ctx.hookEventName, 'SessionStart');
+  const memory: string = ctx.additionalContext;
+  assert.match(memory, /after compact/);
+  assert.match(memory, /Open problem: TypeError: Cannot read properties of null \(reading 'id'\) \(test: auth > login\) — failing 4 run\(s\) in a row/);
+  assert.match(memory, /Already tried, did not fix it:/);
+  assert.match(memory, /null-checks.* at src\/auth\.ts#login/);
+  assert.match(memory, /sentinel_expand_log run=run-\d+/);
+  assert.ok(estimateTokens(memory) <= DEFAULT_CONFIG.memoryTokenBudget, `${estimateTokens(memory)} tokens`);
+
+  // Startup on a failing project still speaks up; once green it goes quiet again.
+  assert.ok(session('startup').stdout);
+  s.recordRun({ command: 'npx vitest run', exitCode: 0, log: 'ok', source: 'test' });
+  assert.equal(session('startup').stdout, undefined);
+  metric(`T14 memory injected after compact: ${estimateTokens(memory)} tokens (budget ${DEFAULT_CONFIG.memoryTokenBudget})`);
+  metric(`T14 memory:\n${memory.split('\n').map((l) => `      │ ${l}`).join('\n')}`);
 });
 
 /* ------------------------------------------------------------------ */

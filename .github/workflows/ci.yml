@@ -48,3 +48,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:pack
+      - run: npm run bench:check

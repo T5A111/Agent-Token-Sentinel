@@ -1,0 +1,8 @@
+{
+  "title": "Crash in the client, root cause in config defaults",
+  "prompt": "The client tests crash. Find the root cause and fix it in src/ so that `npm test` passes. Do not modify the tests.",
+  "testCommand": "npm test",
+  "protectedPaths": [
+    "tests"
+  ]
+}

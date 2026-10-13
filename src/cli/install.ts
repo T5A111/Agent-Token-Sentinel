@@ -46,9 +46,11 @@ export function defaultCommands(here: string = fileURLToPath(import.meta.url)): 
   const isTs = here.endsWith('.ts');
   const cliPath = join(dirname(here), isTs ? 'index.ts' : 'index.js');
   const mcpPath = join(dirname(here), '..', 'mcp', isTs ? 'server.ts' : 'server.js');
+  // Forward slashes work for node on every OS and survive bash quoting on Windows.
+  const cli = cliPath.replace(/\\/g, '/');
   return isTs
-    ? { cli: `npx tsx "${cliPath}"`, mcp: { command: 'npx', args: ['tsx', mcpPath] } }
-    : { cli: `node "${cliPath}"`, mcp: { command: 'node', args: [mcpPath] } };
+    ? { cli: `npx tsx "${cli}"`, mcp: { command: 'npx', args: ['tsx', mcpPath] } }
+    : { cli: `node "${cli}"`, mcp: { command: 'node', args: [mcpPath] } };
 }
 
 export function install(options: InstallOptions): InstallReport {
@@ -81,7 +83,10 @@ export function install(options: InstallOptions): InstallReport {
     mergeJson(join(root, '.claude', 'settings.json'), (cfg) => {
       const hooks = (cfg.hooks ??= {}) as Record<string, unknown[]>;
       const entry = (matcher: string) => ({ matcher, hooks: [{ type: 'command', command: `${cli} hook claude`, timeout: 30 }] });
-      upsertHook(hooks, 'PreToolUse', entry('Edit|MultiEdit|Write|NotebookEdit'));
+      // Bash: lets the sentinel route build/test commands through `sentinel run` (autoWrapTests).
+      upsertHook(hooks, 'PreToolUse', entry('Edit|MultiEdit|Write|NotebookEdit|Bash'));
+      // Re-inject the debugging memory after Claude Code compacts, resumes or clears a session.
+      upsertHook(hooks, 'SessionStart', entry('startup|resume|clear|compact'));
       upsertHook(hooks, 'PostToolUse', entry('Edit|MultiEdit|Write|NotebookEdit|Bash'));
       upsertHook(hooks, 'PostToolUseFailure', entry('Bash'));
     }, write);
@@ -187,7 +192,7 @@ You are guarded by agent-token-sentinel (MCP server \`token-sentinel\`). Follow 
 
 1. Run builds/tests through \`sentinel run -- <command>\` (or call \`sentinel_record_run\` with the exit code and output after every build/test command).
 2. Before editing a file, call \`sentinel_guard_edit\`. If it returns BLOCK, do not edit anything.
-3. Never paste full logs into your reasoning: use the distilled output (\`sentinel_distill_log\`).
+3. Never paste full logs into your reasoning: use the distilled output (\`sentinel_distill_log\`). When it is not enough, fetch the specific part with \`sentinel_expand_log\` instead of re-running the command.
 4. To read a large file, call \`sentinel_prune_file\` with the function/class names you need; edit the numbered lines it shows instead of rewriting the file.
 5. When the circuit is OPEN: stop editing, read \`sentinel://dead-ends\` (or .sentinel/dead-ends/LATEST.md), answer its self-check questions, choose an approach that is NOT on the rejected list, then call \`sentinel_reset_circuit\` with your new hypothesis.
 6. Every ~3 debug rounds, call \`sentinel_compact_history\` and rely on its [Compacted] summary instead of earlier tool output.

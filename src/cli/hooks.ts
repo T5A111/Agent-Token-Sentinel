@@ -9,9 +9,10 @@
  */
 import type { EventSource } from '../types.js';
 import { Sentinel } from '../sentinel.js';
+import { defaultCommands } from './install.js';
 
 export type HookClient = 'claude' | 'cursor' | 'windsurf';
-export type HookPhase = 'pre-edit' | 'post-edit' | 'post-command' | 'ignore';
+export type HookPhase = 'pre-edit' | 'post-edit' | 'pre-command' | 'post-command' | 'session-start' | 'ignore';
 
 export interface NormalizedHook {
   client: HookClient;
@@ -25,6 +26,10 @@ export interface NormalizedHook {
   output?: string;
   failedHint: boolean;
   roots: string[];
+  /** The tool's original input object (needed to return a modified copy). */
+  toolInput?: Record<string, unknown>;
+  /** SessionStart: why the session started (startup | resume | clear | compact | fork). */
+  source?: string;
 }
 
 export interface HookResponse {
@@ -35,7 +40,8 @@ export interface HookResponse {
 
 const EDIT_TOOL = /^(?:Edit|MultiEdit|Write|NotebookEdit)$|edit|write|replace|patch|create_file|delete_file/i;
 const SHELL_TOOL = /^(?:Bash|BashOutput|shell|terminal)$|run_terminal|run_command|shell|terminal/i;
-const SENTINEL_WRAPPED = /\b(?:sentinel|agent-token-sentinel)\s+run\b/;
+/** Commands that already go through `sentinel run` (typed by hand, or rewritten by our PreToolUse hook). */
+const SENTINEL_WRAPPED = /\b(?:sentinel|agent-token-sentinel)\s+run\b|\srun --wrapped\b/;
 
 type Json = Record<string, unknown>;
 
@@ -99,11 +105,26 @@ export function normalizeHookPayload(client: HookClient, payload: unknown, event
     ...[str(p.cwd), str(toolInfo?.cwd)].filter((r): r is string => !!r),
   ];
 
-  return { client, event, phase: classify(event, toolName), toolName, files, fragments, command, exitCode, output, failedHint, roots };
+  return {
+    client,
+    event,
+    phase: classify(client, event, toolName),
+    toolName,
+    files,
+    fragments,
+    command,
+    exitCode,
+    output,
+    failedHint,
+    roots,
+    toolInput,
+    source: str(p.source),
+  };
 }
 
-function classify(event: string, toolName: string | undefined): HookPhase {
+function classify(client: HookClient, event: string, toolName: string | undefined): HookPhase {
   const e = event.toLowerCase();
+  if (e === 'sessionstart') return client === 'claude' ? 'session-start' : 'ignore';
   if (e === 'pre_write_code') return 'pre-edit';
   if (e === 'post_write_code' || e === 'afterfileedit') return 'post-edit';
   if (e === 'post_run_command' || e === 'aftershellexecution') return 'post-command';
@@ -111,8 +132,46 @@ function classify(event: string, toolName: string | undefined): HookPhase {
   const post = e === 'posttooluse' || e === 'posttoolusefailure';
   if (!pre && !post) return 'ignore';
   if (toolName && EDIT_TOOL.test(toolName)) return pre ? 'pre-edit' : 'post-edit';
-  if (toolName && SHELL_TOOL.test(toolName)) return pre ? 'ignore' : 'post-command';
+  // Only Claude Code lets a PreToolUse hook rewrite the command (updatedInput).
+  if (toolName && SHELL_TOOL.test(toolName)) return pre ? (client === 'claude' ? 'pre-command' : 'ignore') : 'post-command';
   return 'ignore';
+}
+
+/* ------------------------------------------------------------------ */
+/* Auto-wrapping build/test commands (Claude Code PreToolUse on Bash)   */
+/* ------------------------------------------------------------------ */
+
+const NEVER_WRAP = [
+  /#\s*sentinel:raw\b/, // explicit opt-out
+  SENTINEL_WRAPPED,
+  /--watch\b|\bwatch\b|\b(?:run\s+)?dev\b|\bserve\b|\bstart\b|\bpreview\b/, // long-running / interactive
+  /(?:^|[^&])&\s*$/, // backgrounded
+  /<<-?\s*['"]?\w+/, // heredoc
+];
+
+/** Whether a shell command is a build/test run worth routing through `sentinel run`. */
+export function shouldWrapCommand(command: string, runPattern: string): boolean {
+  const c = command.trim();
+  if (!c || c.length > 4000) return false;
+  if (NEVER_WRAP.some((re) => re.test(c))) return false;
+  try {
+    return new RegExp(runPattern, 'i').test(c);
+  } catch {
+    return false;
+  }
+}
+
+/** POSIX single-quote a string so it survives one round of shell parsing unchanged. */
+export function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * `npm test` → `<cli> run --wrapped --shell bash -- 'npm test'` (exit code and semantics unchanged).
+ * `--wrapped` marks the command so the PostToolUse hook does not record the same run twice.
+ */
+export function wrapCommand(command: string, cliPrefix: string): string {
+  return `${cliPrefix} run --wrapped --shell bash -- ${shellQuote(command)}`;
 }
 
 /** Failure markers used only when the client does not report an exit code. */
@@ -161,7 +220,11 @@ function postAlert(client: HookClient, message: string): HookResponse {
   return { exitCode: 0, stderr: `[agent-token-sentinel] ${message}` };
 }
 
-export function handleHook(client: HookClient, payload: unknown, options: { root?: string; event?: string } = {}): HookResponse {
+export function handleHook(
+  client: HookClient,
+  payload: unknown,
+  options: { root?: string; event?: string; /** Overrides how wrapped commands invoke the CLI (tests). */ cliPrefix?: string } = {},
+): HookResponse {
   let hook: NormalizedHook;
   try {
     hook = normalizeHookPayload(client, payload, options.event);
@@ -173,6 +236,20 @@ export function handleHook(client: HookClient, payload: unknown, options: { root
   try {
     const sentinel = new Sentinel({ root: resolveHookRoot(hook, options.root) });
     const source = `hook:${client}` as EventSource;
+
+    if (hook.phase === 'pre-command') {
+      if (!sentinel.config.autoWrapTests || !hook.command || hook.toolInput?.run_in_background === true) return { exitCode: 0 };
+      if (!shouldWrapCommand(hook.command, sentinel.config.runCommandPattern)) return { exitCode: 0 };
+      const updatedInput = { ...hook.toolInput, command: wrapCommand(hook.command, options.cliPrefix ?? defaultCommands().cli) };
+      // No permissionDecision: the user's own permission rules still apply to the rewritten command.
+      return { exitCode: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput } }) };
+    }
+
+    if (hook.phase === 'session-start') {
+      const memory = sentinel.memory({ reason: hook.source });
+      if (!memory) return { exitCode: 0 };
+      return { exitCode: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: memory } }) };
+    }
 
     if (hook.phase === 'pre-edit') {
       // Block any write while OPEN, even when the payload carries no path.

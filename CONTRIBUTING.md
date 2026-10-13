@@ -5,7 +5,7 @@ Thanks for helping make coding agents less loopy. Issues and pull requests are w
 ## Development
 
 ```bash
-git clone https://github.com/T5A111/Token-Sentinel.git && cd Token-Sentinel
+git clone https://github.com/T5A111/Agent-Token-Sentinel.git && cd Agent-Token-Sentinel
 npm ci
 npm run typecheck     # strict TypeScript, src + tests
 npm test              # self-verification suite (tests/self-test.ts)

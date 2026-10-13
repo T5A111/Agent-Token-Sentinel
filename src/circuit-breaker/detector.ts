@@ -165,22 +165,79 @@ export function extractError(log: string): ExtractedError {
   return { errorName: errorName || 'UnknownError', message, frames, failingTest: findFailingTest(lines) };
 }
 
+/** The failing test named on this line, for Vitest / Jest / list reporters / pytest. */
+export function failingTestFromLine(line: string): string | undefined {
+  // Vitest: " FAIL  tests/a.test.ts > suite > case"
+  let m = /^\s*FAIL\s+\S+\s+>\s+(.+?)\s*$/.exec(line);
+  if (m) return m[1]?.replace(/\s+\d+ms$/, '');
+  // Jest: "● suite › case"
+  m = /^\s*●\s+(.+›.+?)\s*$/.exec(line);
+  if (m) return m[1];
+  // Vitest list reporter: " × suite > case 12ms" / "✗"
+  m = /^\s*[×✗✕]\s+(.+?)(?:\s+\d+(?:\.\d+)?\s?ms)?\s*$/.exec(line);
+  if (m) return m[1];
+  // pytest: "FAILED tests/test_x.py::test_name - ..."
+  m = /^FAILED\s+(\S+)/.exec(line);
+  if (m) return m[1];
+  return undefined;
+}
+
 function findFailingTest(lines: string[]): string | undefined {
   for (const line of lines) {
-    // Vitest: " FAIL  tests/a.test.ts > suite > case"
-    let m = /^\s*FAIL\s+\S+\s+>\s+(.+?)\s*$/.exec(line);
-    if (m) return m[1]?.replace(/\s+\d+ms$/, '');
-    // Jest: "● suite › case"
-    m = /^\s*●\s+(.+›.+?)\s*$/.exec(line);
-    if (m) return m[1];
-    // Vitest list reporter: " × suite > case 12ms" / "✗"
-    m = /^\s*[×✗✕]\s+(.+?)(?:\s+\d+(?:\.\d+)?\s?ms)?\s*$/.exec(line);
-    if (m) return m[1];
-    // pytest: "FAILED tests/test_x.py::test_name - ..."
-    m = /^FAILED\s+(\S+)/.exec(line);
-    if (m) return m[1];
+    const t = failingTestFromLine(line);
+    if (t) return t;
   }
   return undefined;
+}
+
+export interface FailureSummary {
+  test?: string;
+  errorName?: string;
+  message?: string;
+}
+
+/**
+ * Every distinct failure in a log: each failing test paired with the first
+ * error headline that follows it (or a bare error when no test name is known).
+ */
+export function collectFailures(log: string): FailureSummary[] {
+  const out: FailureSummary[] = [];
+  const seen = new Set<string>();
+  let current: FailureSummary | undefined;
+  const push = (f: FailureSummary) => {
+    const key = `${f.test ?? ''}|${f.errorName ?? ''}|${(f.message ?? '').slice(0, 120)}`;
+    if (seen.has(key)) return;
+    // A test seen first without its error, then again with it: keep the richer entry.
+    const idx = f.test ? out.findIndex((o) => o.test === f.test && !o.errorName) : -1;
+    if (idx >= 0) out.splice(idx, 1);
+    seen.add(key);
+    out.push(f);
+  };
+  for (const line of stripAnsi(log).split('\n')) {
+    if (/^\s*at\s/.test(line)) continue;
+    const test = failingTestFromLine(line);
+    if (test) {
+      if (current) push(current);
+      current = { test: test.trim() };
+      continue;
+    }
+    const tsc = TSC_ERROR.exec(line);
+    const m = tsc ? undefined : ERROR_HEADLINE.exec(line);
+    if (tsc || m) {
+      const errorName = tsc ? (tsc[1] ?? 'TSError') : (m?.[1] ?? 'Error');
+      const message = ((tsc ? tsc[2] : m?.[2]) ?? '').trim();
+      if (current && !current.errorName) {
+        current.errorName = errorName;
+        current.message = message;
+        push(current);
+        current = undefined;
+      } else if (!current) {
+        push({ errorName, message });
+      }
+    }
+  }
+  if (current) push(current);
+  return out;
 }
 
 /**

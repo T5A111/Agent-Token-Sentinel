@@ -1,0 +1,8 @@
+{
+  "title": "Fixing invoices breaks refunds (shared root cause)",
+  "prompt": "Invoice and refund tests are failing. Fix the code in src/ so that `npm test` passes. Do not modify the tests.",
+  "testCommand": "npm test",
+  "protectedPaths": [
+    "tests"
+  ]
+}
